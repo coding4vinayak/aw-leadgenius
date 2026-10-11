@@ -1,5 +1,8 @@
 # LeadGenius
 
+![CI](https://github.com/coding4vinayak/aw-leadgenius/actions/workflows/ci.yml/badge.svg)
+
+
 AI sales engagement and multichannel outreach. Outreach that earns replies,
 not spam complaints — $29/user/month.
 
