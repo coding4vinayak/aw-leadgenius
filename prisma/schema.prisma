@@ -1,0 +1,550 @@
+// LeadGenius - Multichannel Outreach Engine
+//
+// SQLite by default so the product runs with zero infrastructure.
+// For Postgres: change `provider` to "postgresql" and point DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns        Campaign[]
+  sequences        Sequence[]
+  contacts         Contact[]
+  contactLists     ContactList[]
+  sendingAccounts  SendingAccount[]
+  templates        Template[]
+  abTests          ABTest[]
+  webhooks         Webhook[]
+  analyticsDaily   AnalyticsDaily[]
+  subscription     Subscription?
+  memberships Membership[]
+  sessions   Session[]
+  invites     Invite[]
+  apiKeys     ApiKey[]
+}
+
+/// Billing: one active subscription per workspace, managed by Stripe.
+model Subscription {
+  id                 String   @id @default(cuid())
+  workspaceId        String   @unique
+  stripeCustomerId   String   @unique
+  stripeSubscriptionId String? @unique
+  stripePriceId      String?
+  stripeCurrentPeriodEnd DateTime?
+  status             String   @default("incomplete") // incomplete | trialing | active | past_due | canceled | unpaid
+  cancelAtPeriodEnd  Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+}
+
+model Campaign {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  status      String   @default("DRAFT") // DRAFT | ACTIVE | PAUSED | COMPLETED
+  goal        String?  // e.g., "book demo", "reply", "click"
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sequences   CampaignSequence[]
+  enrollments Enrollment[]
+  abTests     ABTest[]
+
+  @@index([workspaceId, status])
+}
+
+model CampaignSequence {
+  campaignId  String
+  sequenceId  String
+  stepOrder   Int
+  delayDays   Int    @default(0)
+  delayHours  Int    @default(0)
+  conditions  Json?  // e.g., {"if": "no_reply", "then": "next_step"}
+
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sequence    Sequence  @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, sequenceId])
+}
+
+model Sequence {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  channel     String   // EMAIL | WHATSAPP | LINKEDIN | MULTI
+  status      String   @default("DRAFT") // DRAFT | ACTIVE | ARCHIVED
+  stepsConfig Json     // Array of step configs
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace      Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaignLinks  CampaignSequence[]
+  enrollments    Enrollment[]
+  abTestVariants ABTestVariant[]
+  steps          SequenceStep[]
+
+  @@index([workspaceId, channel])
+}
+
+model SequenceStep {
+  id           String   @id @default(cuid())
+  sequenceId   String
+  stepNumber   Int
+  channel      String   // EMAIL | WHATSAPP | LINKEDIN | CALL | TASK
+  templateId   String?
+  delayDays    Int      @default(0)
+  delayHours   Int      @default(0)
+  conditions   Json?    // Branch logic
+  createdAt    DateTime @default(now())
+
+  sequence     Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  template     Template? @relation(fields: [templateId], references: [id])
+
+  @@index([sequenceId, stepNumber])
+}
+
+model Template {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  channel      String   // EMAIL | WHATSAPP | LINKEDIN
+  subject      String?  // For email
+  body         String   // Liquid/Handlebars template
+  variables    Json?    // Expected variables
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sequenceSteps SequenceStep[]
+  abVariants   ABTestVariant[]
+
+  @@index([workspaceId, channel])
+}
+
+model Contact {
+  id            String   @id @default(cuid())
+  workspaceId   String
+  // Scoped to the workspace, not global: two customers running the same outreach
+  // list must be able to hold the same address. A global unique here makes the
+  // second customer's insert fail.
+  email         String?
+  phone         String?  // E.164 format
+  linkedinUrl   String?
+  firstName     String?
+  lastName      String?
+  company       String?
+  title         String?
+  customFields  Json?    // Flexible attributes
+  status        String   @default("ACTIVE") // ACTIVE | BOUNCED | UNSUBSCRIBED | DO_NOT_CONTACT
+  source        String?  // manual | import | api | enrichment
+  lastContactAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  listMemberships ContactListMember[]
+  enrollments   Enrollment[]
+  activities    Activity[]
+  replies       Reply[]
+  sentMessages  SentMessage[]
+
+  @@unique([workspaceId, email])
+  @@index([workspaceId, status])
+}
+
+model ContactList {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  isDynamic   Boolean  @default(false) // Dynamic lists based on filters
+  filterJson  Json?    // Filter criteria for dynamic lists
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     ContactListMember[]
+
+  @@index([workspaceId])
+}
+
+model ContactListMember {
+  id         String   @id @default(cuid())
+  listId     String
+  contactId  String
+  addedAt    DateTime @default(now())
+
+  list      ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contact   Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, contactId])
+  @@index([contactId])
+}
+
+model SendingAccount {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  name            String
+  channel         String   // EMAIL | WHATSAPP | LINKEDIN
+  provider        String   // SMTP | TWILIO | META | LINKEDIN_API | OUTREACH_IO
+  config          Json     // Provider-specific config (encrypted)
+  dailyLimit      Int      @default(100)
+  warmupEnabled   Boolean  @default(false)
+  warmupStage     Int      @default(0)
+  reputationScore Float    @default(100)
+  isDefault       Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sentMessages    SentMessage[]
+
+  @@index([workspaceId, channel])
+  @@index([workspaceId, isDefault])
+}
+
+model Enrollment {
+  id              String   @id @default(cuid())
+  campaignId      String
+  sequenceId      String
+  contactId       String
+  currentStep     Int      @default(0)
+  status          String   @default("ACTIVE") // ACTIVE | PAUSED | COMPLETED | BOUNCED | REPLIED | UNSUBSCRIBED
+  nextActionAt    DateTime?
+  assignedAccount String?  // SendingAccount ID
+  abVariantId     String?  // ABTestVariant ID
+  metadata        Json?
+  enrolledAt      DateTime @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  campaign        Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sequence        Sequence      @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  contact         Contact       @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  abVariant       ABTestVariant? @relation(fields: [abVariantId], references: [id], onDelete: SetNull)
+  activities      Activity[]
+  sentMessages    SentMessage[]
+  replies         Reply[]
+
+  @@index([campaignId, status])
+  @@index([contactId, status])
+  @@index([nextActionAt])
+}
+
+model Activity {
+  id           String   @id @default(cuid())
+  enrollmentId String
+  contactId    String
+  type         String   // SENT | DELIVERED | OPENED | CLICKED | REPLIED | BOUNCED | FAILED | UNSUBSCRIBED
+  channel      String
+  messageId    String?  // Provider message ID
+  /// The database-level idempotency gate for an inbound provider event. A webhook
+  /// is delivered at least once and the routes commit this row before driving the
+  /// rollup and the sequence step, so a queue outage answers 503 *after* the row is
+  /// durable and the provider's retry re-runs the handler — which used to write the
+  /// row twice and double-count the day (#60). A redelivery replays the provider's
+  /// own event fields and so reproduces this key; the unique index raises P2002,
+  /// which `recordInboundActivity` reads as "already recorded." Nullable and
+  /// unique: SQLite and Postgres both treat NULLs as distinct, so the internal
+  /// writes that have no provider event (and every row predating this column) keep
+  /// NULL and never collide. Same construction as `User.email @unique` below.
+  idempotencyKey String? @unique
+  metadata     Json?    // Open count, click URL, bounce reason, etc.
+  createdAt    DateTime @default(now())
+
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  contact      Contact    @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([enrollmentId, type])
+  @@index([contactId])
+  @@index([createdAt])
+}
+
+model Reply {
+  id           String   @id @default(cuid())
+  enrollmentId String?
+  contactId    String
+  workspaceId  String
+  channel      String
+  content      String
+  sentiment    String?  // POSITIVE | NEUTRAL | NEGATIVE | INTERESTED | NOT_INTERESTED
+  intent       String?  // DEMO_REQUEST | PRICING | UNSUBSCRIBE | QUESTION | OBJECTION
+  isAutoReply  Boolean  @default(false)
+  processed    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  enrollment   Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  contact      Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId, createdAt])
+  @@index([workspaceId, processed])
+}
+
+model SentMessage {
+  id              String   @id @default(cuid())
+  sendingAccountId String
+  enrollmentId    String?
+  contactId       String
+  templateId      String?
+  channel         String
+  subject         String?
+  body            String
+  providerMessageId String?
+  status          String   @default("QUEUED") // QUEUED | SENT | DELIVERED | FAILED | BOUNCED
+  error           String?
+  sentAt          DateTime?
+  createdAt       DateTime @default(now())
+
+  sendingAccount  SendingAccount @relation(fields: [sendingAccountId], references: [id], onDelete: Cascade)
+  enrollment      Enrollment?    @relation(fields: [enrollmentId], references: [id], onDelete: SetNull)
+  contact         Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([sendingAccountId, status])
+  @@index([enrollmentId])
+  @@index([contactId])
+  @@index([createdAt])
+}
+
+model ABTest {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  campaignId      String
+  name            String
+  hypothesis      String
+  status          String   @default("DRAFT") // DRAFT | RUNNING | COMPLETED | PAUSED
+  trafficSplit    Json     // e.g., {"control": 50, "variant_a": 50}
+  winningVariant  String?
+  confidence      Float?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign        Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  variants        ABTestVariant[]
+
+  @@index([workspaceId, status])
+  @@index([campaignId, status])
+}
+
+model ABTestVariant {
+  id           String   @id @default(cuid())
+  abTestId     String
+  sequenceId   String
+  templateId   String?
+  name         String
+  weight       Int      // Percentage of traffic
+  isControl    Boolean  @default(false)
+  stats        Json     // {sent: 0, opened: 0, clicked: 0, replied: 0, bounced: 0}
+  createdAt    DateTime @default(now())
+
+  abTest       ABTest     @relation(fields: [abTestId], references: [id], onDelete: Cascade)
+  sequence     Sequence   @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  template     Template?  @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  enrollments  Enrollment[]
+
+  @@index([abTestId])
+}
+
+model Webhook {
+  id          String   @id @default(cuid())
+  workspaceId String
+  url         String
+  events      String // e.g., ["enrollment.replied", "contact.bounced"]
+  secret      String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, isActive])
+}
+
+model AnalyticsDaily {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  date         DateTime
+  sent         Int      @default(0)
+  delivered    Int      @default(0)
+  opened       Int      @default(0)
+  clicked      Int      @default(0)
+  replied      Int      @default(0)
+  bounced      Int      @default(0)
+  unsubscribed Int      @default(0)
+  byChannel    Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId, date])
+}
+/// Workspace-scoped API keys. Plaintext is shown once at mint and never stored.
+model ApiKey {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  /// sha256 of the full key. Lookup is by hash, never by plaintext.
+  hashedKey   String    @unique
+  /// First characters, safe to display: "lg_live_a1B2…".
+  prefix      String
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+/// A person who can sign in to the browser UI. Machine access stays with
+/// `ApiKey`; this row is only for the human holding a cookie.
+model User {
+  id           String   @id @default(cuid())
+  /// Stored lowercased. The unique index is what makes signup idempotent at the
+  /// database level rather than only in application code.
+  email        String   @unique
+  name         String?
+  /// scrypt digest, never a plaintext password. See `src/lib/password.ts` for
+  /// why scrypt and not bcrypt or argon2.
+  passwordHash String
+  /// Set true by the verification link. Enforced at sign-in only when a mail
+  /// provider is configured — see `verificationEnforced()` in `lib/email.ts`.
+  emailVerified Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions               Session[]
+  emailVerificationToken EmailVerificationToken?
+  passwordResetTokens    PasswordResetToken[]
+  /// Every workspace this person can open, with the role each seat carries.
+  memberships    Membership[]
+  invitesCreated Invite[]      @relation("InviteCreatedBy")
+}
+
+/// A browser session. The cookie carries a random token and only its sha256 is
+/// stored, so a database dump yields hashes rather than working logins.
+model Session {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  tokenHash   String   @unique
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Per-address attempt counter behind the login and signup forms, so one client
+/// cannot grind through a list of addresses.
+model AuthThrottle {
+  /// "<purpose>:<client address>", e.g. "signin:203.0.113.7".
+  key         String    @id
+  /// Events counted inside the current window: failed guesses, or accounts
+  /// created, depending on which form took the tally.
+  count       Int       @default(0)
+  windowStart DateTime  @default(now())
+  lockedUntil DateTime?
+
+  @@index([windowStart])
+}
+
+/// Single-use email-verification link. Stored hashed, like every other secret
+/// here, so a database dump yields no redeemable links.
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+/// Single-use password-reset link. Redeeming it also destroys every session the
+/// user holds, because a reset exists to evict whoever prompted it.
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+/// One seat in a workspace. The only membership source of truth — see the
+/// migration note in TEST-REPORT: rows were copied from the old implicit join
+/// table, crediting OWNER to whoever was already there.
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  /// OWNER | ADMIN | MEMBER. Signup creates OWNER; invites can only grant ADMIN
+  /// or MEMBER, so accepting a link can never seize a workspace.
+  role        String   @default("OWNER")
+  createdAt   DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+/// A single-use link addressed to one email. Stored hashed, like every other
+/// secret here, so a dump yields no redeemable invitations.
+model Invite {
+  id          String    @id @default(cuid())
+  workspaceId String
+  /// Lowercased. An account that is not this address cannot redeem it.
+  email       String
+  /// ADMIN | MEMBER. OWNER is never issuable.
+  role        String
+  tokenHash   String    @unique
+  createdById String
+  /// Links age out. An invitation left in a chat window or a deleted browser is
+  /// a standing door, and nothing withdraws it when the sender changes their mind.
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("InviteCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([email])
+}
