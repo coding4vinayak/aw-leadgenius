@@ -2,7 +2,7 @@ import { Queue, Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 // Type-only, so it does not close a cycle at runtime: `billing-jobs` imports this
 // module's queue, and the worker below needs the job shape it carries.
-import type { TrialNudgeData } from "./billing-jobs";
+import type { CancellationData, TrialNudgeData } from "./billing-jobs";
 import { prisma } from "./db";
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
@@ -143,7 +143,7 @@ export async function startWorkers() {
   const { deliverWebhook } = await import("./webhooks");
   const { rollupDay } = await import("./analytics");
   const { runWarmup } = await import("./warmup");
-  const { runTrialNudge } = await import("./billing-jobs");
+  const { runBillingJob } = await import("./billing-jobs");
 
   workers.push(new Worker("send", async (job: Job) => {
     const { messageId } = job.data;
@@ -226,7 +226,7 @@ export async function startWorkers() {
   // One email to one owner per job, so the transport is the slow part and there
   // is nothing to gain from running two at once.
   workers.push(new Worker("leadgenius-billing", async (job: Job) => {
-    await runTrialNudge(job as Job<TrialNudgeData>);
+    await runBillingJob(job as Job<TrialNudgeData | CancellationData>);
   }, { connection, concurrency: 1 }));
 
   console.log("LeadGenius workers started");
