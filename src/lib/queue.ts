@@ -1,5 +1,8 @@
 import { Queue, Worker, Job } from "bullmq";
 import IORedis from "ioredis";
+// Type-only, so it does not close a cycle at runtime: `billing-jobs` imports this
+// module's queue, and the worker below needs the job shape it carries.
+import type { TrialNudgeData } from "./billing-jobs";
 import { prisma } from "./db";
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
@@ -69,7 +72,7 @@ export async function enqueue<T extends object>(
  * to, and a Queue with no Worker draining it — so the agreement is guarded where the
  * literal appears rather than by a constant indirection the guard would have to resolve.
  */
-type QueueKey = "send" | "sequence" | "enrichment" | "webhook" | "analytics" | "warmup";
+type QueueKey = "send" | "sequence" | "enrichment" | "webhook" | "analytics" | "warmup" | "billing";
 
 const built: Partial<Record<QueueKey, Queue>> = {};
 
@@ -119,6 +122,16 @@ export const queues = {
   get warmup(): Queue {
     return (built.warmup ??= new Queue("warmup", { connection, defaultJobOptions: JOB_RETENTION }));
   },
+  /**
+   * Trial-expiry warnings. Prefixed with the product where the six names above are
+   * bare, and deliberately so: those are bare because renaming them would orphan
+   * keyspaces that already hold jobs — a #51 decision. A queue created today has no
+   * such history, so it starts on the safe side of rule 6: one Redis serves this
+   * whole portfolio, and a queue name is its only boundary.
+   */
+  get billing(): Queue {
+    return (built.billing ??= new Queue("leadgenius-billing", { connection, defaultJobOptions: JOB_RETENTION }));
+  },
 };
 
 export async function startWorkers() {
@@ -130,6 +143,7 @@ export async function startWorkers() {
   const { deliverWebhook } = await import("./webhooks");
   const { rollupDay } = await import("./analytics");
   const { runWarmup } = await import("./warmup");
+  const { runTrialNudge } = await import("./billing-jobs");
 
   workers.push(new Worker("send", async (job: Job) => {
     const { messageId } = job.data;
@@ -207,6 +221,12 @@ export async function startWorkers() {
   workers.push(new Worker("warmup", async (job: Job) => {
     const { accountId } = job.data;
     await runWarmup(accountId);
+  }, { connection, concurrency: 1 }));
+
+  // One email to one owner per job, so the transport is the slow part and there
+  // is nothing to gain from running two at once.
+  workers.push(new Worker("leadgenius-billing", async (job: Job) => {
+    await runTrialNudge(job as Job<TrialNudgeData>);
   }, { connection, concurrency: 1 }));
 
   console.log("LeadGenius workers started");
