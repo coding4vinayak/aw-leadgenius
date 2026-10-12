@@ -13,7 +13,7 @@ export default function Page() {
       <SiteNav />
       <main className="mx-auto max-w-4xl px-6 py-12">
         <h1 className="text-3xl font-bold tracking-tight">Pricing</h1>
-        <p className="mt-2 text-gray-600">Every tier includes unlimited campaigns and the full activity trail. You pay per seat, never per email.</p>
+        <p className="mt-2 text-gray-600">Every tier includes unlimited campaigns and the full activity trail. You pay per seat, never per email. At checkout we bill for the members in your workspace — add teammates before you buy, and write to support any time you grow.</p>
         <div className="mt-8 grid gap-6 sm:grid-cols-3">
           <div className="rounded-2xl border p-6 border-gray-200 bg-white shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-wide text-gray-600">Monthly</p>

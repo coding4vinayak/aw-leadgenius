@@ -62,12 +62,18 @@ export function sameOriginReturnUrl(raw: unknown): string | null {
   }
 }
 
-export async function createCheckoutSession(workspaceId: string, priceId: keyof typeof PRICES, returnUrl: string) {
+/**
+ * `quantity` is the seat count, not a knob: LeadGenius is priced per user, so
+ * a checkout for one is charging $29 for a five-person team. The route passes
+ * the live membership count.
+ */
+export async function createCheckoutSession(workspaceId: string, priceId: keyof typeof PRICES, returnUrl: string, quantity = 1) {
+  const seats = Math.max(1, Math.floor(quantity));
   const customerId = await ensureCustomer(workspaceId, "", "");
   const session = await getStripe().checkout.sessions.create({
     mode: "subscription",
     customer: customerId,
-    line_items: [{ price: PRICES[priceId], quantity: 1 }],
+    line_items: [{ price: PRICES[priceId], quantity: seats }],
     allow_promotion_codes: true,
     billing_address_collection: "required",
     subscription_data: { metadata: { workspaceId }, trial_period_days: 14 },

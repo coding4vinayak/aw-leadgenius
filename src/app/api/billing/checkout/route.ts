@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createCheckoutSession, PRICES, sameOriginReturnUrl } from "@/lib/stripe";
 import { getSession } from "@/lib/session";
+import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,10 @@ export async function POST(request: Request) {
   if (!ret) return NextResponse.json({ error: "returnUrl must be a page on this site" }, { status: 400 });
 
   try {
-    const url = await createCheckoutSession(session.workspaceId, priceId as keyof typeof PRICES, ret);
+    // Per-user pricing billed by the seat count in the workspace right now.
+    // Hardcoding one here undercharged every real team by (seats - 1) × $29.
+    const seats = await prisma.membership.count({ where: { workspaceId: session.workspaceId } });
+    const url = await createCheckoutSession(session.workspaceId, priceId as keyof typeof PRICES, ret, seats);
     return NextResponse.json({ url });
   } catch (err) {
     console.error("[billing] checkout error:", err);

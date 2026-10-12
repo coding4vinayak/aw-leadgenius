@@ -28,11 +28,14 @@ async function sendReceipt(session: Stripe.Checkout.Session) {
   const subId = typeof session.subscription === "string" ? session.subscription : undefined;
   let periodEnd: Date | null = null;
   let trialing = false;
+  let seats: number | null = null;
   if (subId) {
     try {
       const sub = await getStripe().subscriptions.retrieve(subId);
-      const raw = sub.items.data[0]?.current_period_end;
+      const item = sub.items.data[0];
+      const raw = item?.current_period_end;
       if (typeof raw === "number") periodEnd = new Date(raw * 1000);
+      if (typeof item?.quantity === "number") seats = item.quantity;
       trialing = sub.status === "trialing";
     } catch {
       // period end is a nicety; a receipt without a date still confirms payment.
@@ -41,7 +44,7 @@ async function sendReceipt(session: Stripe.Checkout.Session) {
   const { subject, html, text: plain } = renderReceiptEmail({
     product: productName(),
     name: session.customer_details?.name ?? null,
-    planLabel: `${productName()} subscription`,
+    planLabel: seats && seats > 1 ? `${productName()} — ${seats} seats` : `${productName()} subscription`,
     periodEnd,
     portalUrl: `${appBaseUrl()}/dashboard`,
     trialing,
