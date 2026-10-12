@@ -20,12 +20,12 @@ export default function Home() {
           <p className="mx-auto mt-4 max-w-2xl text-xl text-gray-600">Outreach that earns replies, not spam complaints.</p>
           <p className="mx-auto mt-3 max-w-2xl text-gray-600">Multichannel sequences across email, WhatsApp, and LinkedIn — with warmup, reputation guardrails, and a full sent-to-replied trail on every contact.</p>
           <div className="mt-8 flex justify-center gap-4">
-            <a href="/dashboard?workspace=demo" className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700 transition">
+            <Link href="/pricing" className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700 transition">
+              Start 14-day free trial
+            </Link>
+            <a href="/dashboard?workspace=demo" className="rounded-lg border border-gray-300 hover:bg-gray-50 px-6 py-3 font-semibold transition">
               Open live demo
             </a>
-            <Link href="/pricing" className="rounded-lg border border-gray-300 hover:bg-gray-50 px-6 py-3 font-semibold transition">
-              Pricing · $29 per user/month
-            </Link>
           </div>
         </section>
         <section id="features" className="mx-auto max-w-6xl px-6 py-12">
@@ -84,14 +84,14 @@ export default function Home() {
           </div>
         </section>
         <section className="mx-auto max-w-4xl px-6 pb-16 text-center">
-          <h2 className="text-2xl font-bold">Try the live demo — no card, no call.</h2>
+          <h2 className="text-2xl font-bold">Try it free — a live demo, or 14 days of the full product.</h2>
           <div className="mt-6 flex justify-center gap-4">
-            <a href="/dashboard?workspace=demo" className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700 transition">
+            <Link href="/pricing" className="rounded-lg bg-blue-600 px-6 py-3 font-semibold text-white hover:bg-blue-700 transition">
+              Start 14-day free trial
+            </Link>
+            <a href="/dashboard?workspace=demo" className="rounded-lg border border-gray-300 hover:bg-gray-50 px-6 py-3 font-semibold transition">
               Open live demo
             </a>
-            <Link href="/pricing" className="rounded-lg border border-gray-300 hover:bg-gray-50 px-6 py-3 font-semibold transition">
-              See pricing
-            </Link>
           </div>
         </section>
       </main>

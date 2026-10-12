@@ -233,7 +233,7 @@ export function renderWelcomeEmail(data: {
     ...layout(
       data.product,
       `Your ${data.workspaceName} workspace is ready`,
-      `${greeting} your ${data.product} workspace is set up. Sign in to see it — create a campaign, connect a sending account, and the deliverability engine takes it from there.`,
+      `${greeting} your ${data.product} workspace is set up. Sign in and start a campaign — the deliverability engine handles warmup, reputation floors and daily limits. When you are ready, every paid plan starts with a 14-day free trial: no charge before day 14, cancel any time from the portal.`,
       "Open your dashboard",
       data.dashboardUrl,
     ),
