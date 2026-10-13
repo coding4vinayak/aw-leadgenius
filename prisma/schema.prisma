@@ -42,6 +42,7 @@ model Subscription {
   stripeCustomerId   String   @unique
   stripeSubscriptionId String? @unique
   stripePriceId      String?
+  stripeSeats        Int?
   stripeCurrentPeriodEnd DateTime?
   status             String   @default("incomplete") // incomplete | trialing | active | past_due | canceled | unpaid
   cancelAtPeriodEnd  Boolean  @default(false)

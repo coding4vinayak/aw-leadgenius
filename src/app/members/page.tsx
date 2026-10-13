@@ -5,6 +5,8 @@ import { SiteNav, SiteFooter } from "@/components/site";
 import { getSession } from "@/lib/session";
 import { canEditRole, canManageRoles } from "@/lib/roles";
 import { listPendingInvites } from "@/lib/invites";
+import { seatSummary, seatUsage } from "@/lib/seats";
+import { ManageBillingButton } from "@/components/manage-billing";
 import { InviteForm } from "@/components/invite-form";
 import { MemberRole } from "@/components/member-role";
 import { PendingInvites } from "@/components/pending-invites";
@@ -71,13 +73,16 @@ export default async function MembersPage() {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const [memberships, invites] = await Promise.all([
+  const [memberships, invites, seats] = await Promise.all([
     prisma.membership.findMany({
       where: { workspaceId: session.workspaceId },
       include: { user: { select: { email: true, name: true } } },
     }),
     listPendingInvites(session.workspaceId),
+    seatUsage(session.workspaceId),
   ]);
+  const seatLine = seatSummary(seats);
+  const seatsFull = seats.cap !== null && seats.used >= seats.cap;
 
   const members = memberships.sort(
     (a, b) => (RANK[a.role] ?? 9) - (RANK[b.role] ?? 9) || a.createdAt.getTime() - b.createdAt.getTime(),
@@ -103,6 +108,17 @@ export default async function MembersPage() {
           owner or an admin, and an invitation names one address and works once, so it cannot be
           forwarded to whoever happens to click it first.
         </p>
+
+        {seatLine ? (
+          <div
+            className={`mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4 text-sm ${
+              seatsFull ? "border-amber-200 bg-amber-50 text-amber-900" : "border-gray-200 bg-white text-gray-700"
+            }`}
+          >
+            <span>{seatLine}</span>
+            <ManageBillingButton />
+          </div>
+        ) : null}
 
         <div className="mt-8">
           <Section

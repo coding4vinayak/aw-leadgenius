@@ -1,5 +1,93 @@
 import { prisma } from "./db";
 import { canEditRole, canGrant } from "./roles";
+import { SUBSCRIPTION_STATUS_ACTIVE } from "./stripe";
+
+/**
+ * The seat meter, which is the other half of a per-user price.
+ *
+ * Checkout bills for the members in the workspace (#106) and the pricing page
+ * promises the invoice "scales with your team", but until now the number lived
+ * only inside Stripe: an Owner on a one-seat plan could invite thirty
+ * colleagues and neither the product nor the bill noticed. Storing the line
+ * item quantity at every sync and reading it here is what makes the price real
+ * — and it is the upgrade path, because the way past the limit is to buy
+ * another seat, which is the transaction this product exists to repeat.
+ */
+export type SeatUsage = {
+  /** What the subscription is billed for, or null when the workspace has no
+   *  known number — a plan this app has not synced since the column existed, or
+   *  no paid plan at all. */
+  cap: number | null;
+  /** Seats already occupied or promised: every member, plus every invite that
+   *  has not been accepted and has not expired. A pending link is a seat
+   *  committed the moment somebody says yes, so counting members alone would let
+   *  an Owner hand out links all afternoon and leave the invoice behind. */
+  used: number;
+};
+
+/**
+ * The count in one sentence, next to the rule it describes: the banner a
+ * manager reads and the error an invite form returns must not be free to word
+ * the same limit differently. Null when there is nothing to compare against —
+ * an unknown cap has no number to spell out, and inventing one here would be
+ * the same lie the meter refuses.
+ */
+export function seatSummary(usage: SeatUsage): string | null {
+  const { cap, used } = usage;
+  if (cap === null) return null;
+  if (used > cap)
+    return (
+      `${used} of ${cap} paid seats are taken — the team is bigger than the plan, ` +
+      `and the invoice is short ${used - cap} ${used - cap === 1 ? "seat" : "seats"}.`
+    );
+  if (used === cap)
+    return cap === 1
+      ? "The only paid seat is taken or already invited — the next person needs another seat."
+      : `All ${cap} paid seats are taken or already invited — the next person needs another seat.`;
+  const open = cap - used;
+  return `${used} of ${cap} paid seats taken, ${open} ${open === 1 ? "is" : "are"} still open.`;
+}
+
+/**
+ * The rule as plain arithmetic, so it can be driven with real numbers and no
+ * database.
+ *
+ * An unknown cap is not a zero cap. Refusing to let a paying team invite anybody
+ * because a column this app only just started writing was never populated is a
+ * support ticket and a churn risk, not a billing win — so the meter fails open
+ * on `null` and the next sync closes it.
+ *
+ * The refusal is the summary sentence plus the way out, built from the same
+ * call: a banner that says one thing and an error that says another is how a
+ * limit reads like a bug.
+ */
+export function seatDecision(usage: SeatUsage): { allowed: true } | { allowed: false; error: string } {
+  if (usage.cap === null || usage.used < usage.cap) return { allowed: true };
+  return {
+    allowed: false,
+    error:
+      `${seatSummary(usage)} The plan is priced per user, so the way past the limit is to buy ` +
+      `another seat — the billing portal changes the quantity in one click, and the invoice ` +
+      `scales with it.`,
+  };
+}
+
+export async function seatUsage(workspaceId: string, now: Date = new Date()): Promise<SeatUsage> {
+  const [subscription, members, pending] = await Promise.all([
+    prisma.subscription.findUnique({
+      where: { workspaceId },
+      select: { status: true, stripeSeats: true },
+    }),
+    prisma.membership.count({ where: { workspaceId } }),
+    prisma.invite.count({ where: { workspaceId, acceptedAt: null, expiresAt: { gt: now } } }),
+  ]);
+  const cap = subscription
+    ? (SUBSCRIPTION_STATUS_ACTIVE as readonly string[]).includes(subscription.status)
+      ? subscription.stripeSeats
+      : null
+    : null;
+  return { cap, used: members + pending };
+}
 
 /**
  * Changing or ending an existing seat.

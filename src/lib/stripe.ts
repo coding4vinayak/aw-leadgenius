@@ -109,14 +109,23 @@ export async function syncSubscriptionFromStripe(stripeSub: Stripe.Subscription)
   if (!workspaceId) return;
 
   const status = stripeSub.status;
-  const itemPeriodEnd = stripeSub.items.data[0]?.current_period_end;
+  const item = stripeSub.items.data[0];
+  const itemPeriodEnd = item?.current_period_end;
   const periodEnd = typeof itemPeriodEnd === "number" ? new Date(itemPeriodEnd * 1000) : null;
+  // The quantity on the line item *is* the seat count for a per-user price, and
+  // Stripe is the only place the number exists after checkout. Storing it is
+  // what turns "$29 per user" from a pricing-page claim into something the
+  // product can hold a workspace to — and it is refreshed by every
+  // `customer.subscription.updated`, which is the event the portal's "change
+  // quantity" button produces.
+  const seats = typeof item?.quantity === "number" ? item.quantity : null;
 
   await prisma.subscription.upsert({
     where: { workspaceId },
     update: {
       stripeSubscriptionId: stripeSub.id,
-      stripePriceId: stripeSub.items.data[0]?.price.id,
+      stripePriceId: item?.price.id,
+      stripeSeats: seats,
       stripeCurrentPeriodEnd: periodEnd,
       status,
       cancelAtPeriodEnd: stripeSub.cancel_at_period_end,
@@ -125,7 +134,8 @@ export async function syncSubscriptionFromStripe(stripeSub: Stripe.Subscription)
       workspaceId,
       stripeCustomerId: stripeSub.customer as string,
       stripeSubscriptionId: stripeSub.id,
-      stripePriceId: stripeSub.items.data[0]?.price.id,
+      stripePriceId: item?.price.id,
+      stripeSeats: seats,
       stripeCurrentPeriodEnd: periodEnd,
       status,
       cancelAtPeriodEnd: stripeSub.cancel_at_period_end,
