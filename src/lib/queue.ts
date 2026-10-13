@@ -72,7 +72,7 @@ export async function enqueue<T extends object>(
  * to, and a Queue with no Worker draining it — so the agreement is guarded where the
  * literal appears rather than by a constant indirection the guard would have to resolve.
  */
-type QueueKey = "send" | "sequence" | "enrichment" | "webhook" | "analytics" | "warmup" | "billing";
+type QueueKey = "send" | "sequence" | "enrichment" | "webhook" | "analytics" | "warmup" | "billing" | "scheduled";
 
 const built: Partial<Record<QueueKey, Queue>> = {};
 
@@ -132,7 +132,75 @@ export const queues = {
   get billing(): Queue {
     return (built.billing ??= new Queue("leadgenius-billing", { connection, defaultJobOptions: JOB_RETENTION }));
   },
+  /**
+   * The queue the sequence cadence rides on. Product-prefixed for the same
+   * reason `leadgenius-billing` is: the six bare names above are bare because
+   * renaming them would orphan keyspaces that already hold jobs, and a queue
+   * created today has no such history — one Redis serves this whole portfolio,
+   * and a queue name is its only boundary.
+   */
+  get scheduled(): Queue {
+    return (built.scheduled ??= new Queue("leadgenius-scheduled", { connection, defaultJobOptions: JOB_RETENTION }));
+  },
 };
+
+/**
+ * BullMQ's own key for the one recurring sweep this app has. Fixed rather than
+ * generated, because it is what makes registering the sweep idempotent: a
+ * generated key would leave one scheduler per process that ever booted, each of
+ * them scanning the same enrollments. `upsertJobScheduler` on a key that already
+ * exists updates it rather than adding a second.
+ */
+export const SCHEDULED_SWEEP_KEY = "leadgenius-scheduled-sweep";
+
+/** The job name the `leadgenius-scheduled` worker's handler runs. */
+export const SCHEDULED_SWEEP_NAME = "run-scheduled";
+
+/**
+ * Every minute. The sequence waits this app sells are in days and hours
+ * (`delayDays`, `delayHours`), so a minute is not a resolution anything needs —
+ * it is the resolution the *scan* has, and the cost of coarser is a follow-up
+ * that arrives up to that much late. A minute is what the two apps that solved
+ * this first settled on (`abetflow` #55, `leadworks` #53), and it is cheap here
+ * because the query is one indexed range on `@@index([nextActionAt])`.
+ */
+export const SCHEDULED_SWEEP_PATTERN = "* * * * *";
+
+/**
+ * Register the recurring sweep, so the sequence cadence has a producer.
+ *
+ * Nothing did. `TIME_ELAPSED` is a value in this app's own trigger union, three
+ * step conditions are written to need it, and `nextActionAt` is a column with an
+ * index and no reader anywhere in `src/` — the shape this portfolio has now seen
+ * five times, and the reason the sweep is registered here rather than assumed.
+ *
+ * A scheduler rather than `setInterval`, because the cadence has to run once per
+ * minute for the product and not once per process: `register()` runs on every
+ * server boot, and a timer would fire the scan from each of them, sending the
+ * same follow-up as many times as the app happens to be running. BullMQ keeps the
+ * schedule in Redis and hands one job per tick to whichever worker is listening.
+ *
+ * The hazard the two earlier apps measured applies unchanged here: bullmq's *ESM*
+ * build cannot load at all on this box (`job-scheduler.js` imports a named
+ * `parseExpression` from cron-parser 4.9.0 that its ESM surface does not export),
+ * so this only works while module resolution stays on `dist/cjs` — which is what
+ * both `next` and `tsx --test` resolve. If a future build config routes through
+ * `dist/esm`, this fails loudly at boot rather than quietly not firing.
+ */
+export async function registerScheduledSweep(): Promise<void> {
+  await queues.scheduled.upsertJobScheduler(
+    SCHEDULED_SWEEP_KEY,
+    { pattern: SCHEDULED_SWEEP_PATTERN },
+    { name: SCHEDULED_SWEEP_NAME, data: {} },
+  );
+}
+
+/** The bounded-sweep registration helper is vendored through shared/queue/sweep.ts
+ *  (§8.55) — see ./queue-sweep for the three declarations and the measurement that
+ *  set 5s. Re-exported so `startWorkers()` and callers importing from ./queue keep
+ *  their existing surface while the shape lives in one file. */
+export { awaitWithRegistrationTimeout, SWEEP_REGISTER_TIMEOUT_MS, type RegistrationOutcome } from "./queue-sweep";
+import { awaitWithRegistrationTimeout, SWEEP_REGISTER_TIMEOUT_MS } from "./queue-sweep";
 
 export async function startWorkers() {
   const { sendEmail } = await import("./channels/email");
@@ -144,6 +212,7 @@ export async function startWorkers() {
   const { rollupDay } = await import("./analytics");
   const { runWarmup } = await import("./warmup");
   const { runBillingJob } = await import("./billing-jobs");
+  const { runDueSequenceSteps } = await import("./scheduler");
 
   workers.push(new Worker("send", async (job: Job) => {
     const { messageId } = job.data;
@@ -228,6 +297,42 @@ export async function startWorkers() {
   workers.push(new Worker("leadgenius-billing", async (job: Job) => {
     await runBillingJob(job as Job<TrialNudgeData | CancellationData>);
   }, { connection, concurrency: 1 }));
+
+  // The cadence. Concurrency 1 because the sweep is one range scan over every
+  // tenant's enrollments and two ticks running at once would evaluate the same
+  // due row twice — the second reading a `nextActionAt` the first has not moved
+  // yet. Serial ticks mean the later pass reads the database after the earlier
+  // one finished, so a step already spent is no longer due and is not spent again.
+  workers.push(new Worker("leadgenius-scheduled", async (job: Job) => {
+    // Dispatched by name rather than assumed, which is the discipline
+    // `runBillingJob` carries for the same reason: this queue has one producer
+    // today, and a queue that gains a second kind of job without gaining a branch
+    // here should show up as a failed job, not as a silent no-op.
+    if (job.name !== SCHEDULED_SWEEP_NAME) throw new Error(`Unknown scheduled job: ${job.name}`);
+    const processed = await runDueSequenceSteps();
+    if (processed > 0) console.log(`[sequence] evaluated ${processed} due enrollment(s)`);
+  }, { connection, concurrency: 1 }));
+
+  // Last, because a schedule this process could not add is not eight Workers that
+  // failed to start: `instrumentation.ts` answers a rejecting `startWorkers()` with
+  // one "workers failed to start" line while every Worker above is already
+  // constructed and retrying its connection regardless.
+  //
+  // It is also bounded, and that is not decoration. Measured on the two apps that
+  // solved this first, against a Redis that answers nothing: `registerScheduledSweep()`
+  // does not reject, it never settles — bullmq awaits the shared connection's
+  // readiness while ioredis reconnects forever — so a bare `try { await } catch` left
+  // `startWorkers()` pending past 12s and the boot never reached its "workers started"
+  // line. A Redis that answers and *refuses* is the opposite shape: `upsertJobScheduler`
+  // rejects on the spot. The two need different logs, and both must let the boot finish.
+  const sweep = await awaitWithRegistrationTimeout(registerScheduledSweep(), SWEEP_REGISTER_TIMEOUT_MS);
+  if (sweep === "failed") {
+    console.error("[LeadGenius] scheduled sweep NOT registered — no sequence follow-up will fire until a boot succeeds");
+  } else if (sweep === "timed-out") {
+    console.error(
+      `[LeadGenius] scheduled sweep registration did not complete within ${SWEEP_REGISTER_TIMEOUT_MS}ms (Redis unreachable?) — boot continues; the sweep registers on the next boot that reaches Redis`,
+    );
+  }
 
   console.log("LeadGenius workers started");
 }

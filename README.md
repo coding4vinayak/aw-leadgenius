@@ -192,7 +192,10 @@ POST   /api/ai/draft-reply                 # draft a reply; human sends
 Sending accounts carry daily limits and reputation scores; the engine skips
 spent or low-reputation accounts rather than burning a domain. Warmup ramps
 new senders gradually. Bounces and complaints pause the enrollment
-automatically — deliverability is enforced in code, not in a runbook.
+automatically — deliverability is enforced in code, not in a runbook. The
+spacing those guards exist for is enforced too: the waits between steps are
+read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
+somewhere*), so a four-step sequence arrives as four emails on four days.
 
 ## AI (optional)
 
@@ -363,3 +366,48 @@ analytics GET is a reader, not a second writer": the route calls `getDailyAnalyt
 `aggregateAnalytics`, the reader `findUnique`s and names no `upsert`/`create`/`update`, and
 buckets on `dayBucket`; two mutants — the GET back on the compute path, the reader switched to
 `upsert` — each biting to 36/1).
+
+Sequences never sent a follow-up. Two halves, both measured before either was
+fixed: a step whose condition is a *wait* (`no_reply`, `no_open`, `no_click` — each
+written to require `triggerType === "TIME_ELAPSED"`) could never be satisfied, because
+no caller anywhere in `src/` produced that value; and a step with *no* condition was spent
+by the `SENT` job the send worker queues the moment the previous message leaves, so
+`delayDays: 3` meant three seconds. `Enrollment.nextActionAt` was the column the engine
+already wrote at the end of every step and `prisma/schema.prisma` already indexed
+(`@@index([nextActionAt])`) — it just had no reader. So `scheduler.ts:runDueSequenceSteps`
+is that reader: one indexed range scan (`status: "ACTIVE"`, `nextActionAt` recorded and in
+the past), oldest-first, bounded at 100 rows per tick, each row evaluated in its own
+`try`/`catch` and all of them handed the *same* `now` the scan decided with. The engine's
+half is `stepIsDue(nextActionAt, now)`, consulted only when a step has no condition of its
+own — event triggers (`REPLIED`, `BOUNCED`, `CLICKED`) still act on events, so fixing the
+cadence does not cost reply automation. A `null` wait means nothing is scheduled, which is
+how a brand-new enrollment still gets its first email immediately rather than after a delay
+it never asked for. Paused rows are excluded by the *clause*, not left for the engine to
+decline: a sweep that selected them would re-read, re-decline and re-log every paused
+enrollment in the database once a minute for as long as the buyer left it paused, and
+pausing mid-flight is the one thing they are entitled to do. It rides `leadgenius-scheduled`
+— product-prefixed, because the six bare names above are bare only because renaming them
+would orphan keyspaces that already hold jobs — under the fixed scheduler key
+`leadgenius-scheduled-sweep` on `* * * * *`, so N boots leave one schedule rather than N. A
+scheduler rather than `setInterval` for the same reason: `register()` runs on every boot, and
+a timer would fire this scan once per process per minute and send the same follow-up that many
+times. The worker is concurrency 1 — two overlapping ticks would each read a due row the other
+has not yet moved — and registration happens last and bounded by the vendored
+`awaitWithRegistrationTimeout` (§8.55), because against a Redis that answers nothing
+`upsertJobScheduler` does not reject, it never settles, and an unbounded await there hangs the
+boot rather than merely losing the schedule. Why a scan instead of one delayed job per step:
+`PATCH /api/enrollments/:id` has exactly one writable field, `nextActionAt`, and a delayed job
+sits in Redis where that edit cannot reach it — a scan reads the column the engine writes, so
+the pause/reschedule control means something again, rows written before this change are covered,
+and a retry cannot mint a fresh due date from a second clock. Guards in
+`tests/unit/sequence-sweep.test.ts` (27). After-probe on a **copy** of `dev.db` and Redis db 13:
+the due row was spent (2 messages created by the pass, the enrollment left at
+`currentStep` 2 with a `nextActionAt` three days out),
+a tenant with no sending account evaluated first and did not stop the pass (2 of 2 due rows),
+the PAUSED enrollment was untouched, a `SENT` trigger produced 0 messages against an
+unconditional step still inside its wait, an `ENROLLED` trigger produced 1 (the first email is
+not made to wait), registering twice left exactly one scheduler, and a plain boot with no caller
+spent a due enrollment on its own after 3s. On that same copy the shipped data reads 0 ACTIVE
+enrollments sitting on an ended wait, 0 steps with conditions and 0 `SendingAccount` rows — which
+is why this went unnoticed: nothing configured in the dev workspace could show it, while every
+real campaign's second email was silently never sent.

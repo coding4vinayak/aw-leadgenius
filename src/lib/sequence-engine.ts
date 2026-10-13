@@ -14,7 +14,40 @@ export interface SequenceStepConfig {
   };
 }
 
-export async function processSequenceStep(enrollmentId: string, triggerType: "ENROLLED" | "SENT" | "DELIVERED" | "OPENED" | "CLICKED" | "REPLIED" | "BOUNCED" | "TIME_ELAPSED"): Promise<void> {
+/**
+ * What can start a step. The activity webhooks and the send worker pass the
+ * second eight; `TIME_ELAPSED` is what the due-scan passes
+ * (`scheduler.ts:runDueSequenceSteps`) and until #115 it was a value no caller
+ * in this repository produced.
+ */
+export type SequenceTrigger =
+  | "ENROLLED"
+  | "SENT"
+  | "DELIVERED"
+  | "OPENED"
+  | "CLICKED"
+  | "REPLIED"
+  | "BOUNCED"
+  | "TIME_ELAPSED";
+
+/**
+ * Whether a step's wait has ended.
+ *
+ * `null` means nothing is scheduled, which is the state of a brand-new
+ * enrollment: its first step is due the moment it is created, not after some
+ * delay it never asked for. A step that is due exactly at the tick is due —
+ * `<=`, because the sweep runs on a minute boundary and a `nextActionAt` that
+ * lands on that boundary must not wait for the next one.
+ */
+export function stepIsDue(nextActionAt: Date | null, now: Date): boolean {
+  return nextActionAt === null || nextActionAt.getTime() <= now.getTime();
+}
+
+export async function processSequenceStep(
+  enrollmentId: string,
+  triggerType: SequenceTrigger,
+  now: Date = new Date(),
+): Promise<void> {
   const enrollment = await prisma.enrollment.findUnique({
     where: { id: enrollmentId },
     include: {
@@ -34,14 +67,30 @@ export async function processSequenceStep(enrollmentId: string, triggerType: "EN
     return;
   }
 
-  const shouldProceed = await evaluateStepConditions(enrollment, currentStep, triggerType);
+  const shouldProceed = await evaluateStepConditions(enrollment, currentStep, triggerType, now);
   if (!shouldProceed) return;
 
   await executeStep(enrollment, currentStep);
 }
 
-async function evaluateStepConditions(enrollment: any, step: SequenceStepConfig, triggerType: string): Promise<boolean> {
-  if (!step.conditions) return true;
+async function evaluateStepConditions(
+  enrollment: any,
+  step: SequenceStepConfig,
+  triggerType: string,
+  now: Date,
+): Promise<boolean> {
+  if (!step.conditions) {
+    // A step with no condition has nothing to check but the calendar, and the
+    // calendar is the whole product: `delayDays: 3` between two emails means the
+    // prospect gets them three days apart. Without this line the `SENT` job the
+    // send worker queues the moment a message leaves spends the next step in the
+    // same second — which is the failure `POST /api/sequences` already describes
+    // about a lost delay ("scheduled a two-week sequence to run in a day"),
+    // arrived at from the other side. It is also the reason a follow-up lands on
+    // a domain that has not warmed up yet: the throttle and reputation floors in
+    // `selectSendingAccount` exist for spacing this app is not doing.
+    return stepIsDue(enrollment.nextActionAt, now);
+  }
 
   const { if: condition, then: action } = step.conditions;
 
