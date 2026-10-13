@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
-import { createCheckoutSession, PRICES, sameOriginReturnUrl } from "@/lib/stripe";
+import {
+  createCheckoutSession,
+  PRICES,
+  sameOriginReturnUrl,
+  SUBSCRIPTION_STATUS_ACTIVE,
+} from "@/lib/stripe";
 import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/db";
+import { seatUsage } from "@/lib/seats";
 
 export const dynamic = "force-dynamic";
 
@@ -27,11 +33,36 @@ export async function POST(request: Request) {
   const ret = sameOriginReturnUrl(returnUrl);
   if (!ret) return NextResponse.json({ error: "returnUrl must be a page on this site" }, { status: 400 });
 
+  // A second checkout is a second subscription. Stripe keeps charging the first
+  // one — nothing here cancels it, and the local row is keyed by workspace, so
+  // it ends up describing the newer of the two while the older invoice carries
+  // on arriving. That is a refund conversation at best and a chargeback at
+  // worst, and it is the buyer's last impression of the product. Changing what
+  // you pay for is the portal's job, and the portal is where a card that is
+  // failing gets fixed before Stripe cancels on its own.
+  const current = await prisma.subscription.findUnique({
+    where: { workspaceId: session.workspaceId },
+    select: { status: true },
+  });
+  if (current && (SUBSCRIPTION_STATUS_ACTIVE as readonly string[]).includes(current.status)) {
+    return NextResponse.json(
+      {
+        error:
+          `This workspace is already on a ${current.status} plan. Buy more seats, switch to annual or fix ` +
+          "the card in the billing portal — a second checkout would be a second subscription, and a second invoice.",
+      },
+      { status: 409 },
+    );
+  }
+
   try {
-    // Per-user pricing billed by the seat count in the workspace right now.
-    // Hardcoding one here undercharged every real team by (seats - 1) × $29.
-    const seats = await prisma.membership.count({ where: { workspaceId: session.workspaceId } });
-    const url = await createCheckoutSession(session.workspaceId, priceId as keyof typeof PRICES, ret, seats);
+    // The invoice has to cover the team the meter will enforce: everyone already
+    // in the workspace, plus the links still outstanding to people who have not
+    // arrived. Counting memberships alone opens a plan the workspace is over the
+    // moment its first pending invite is accepted — which is to say, on the day
+    // the trial converts, with the limit already hit.
+    const { used } = await seatUsage(session.workspaceId);
+    const url = await createCheckoutSession(session.workspaceId, priceId as keyof typeof PRICES, ret, Math.max(1, used));
     return NextResponse.json({ url });
   } catch (err) {
     console.error("[billing] checkout error:", err);
