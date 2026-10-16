@@ -7,7 +7,9 @@
 // the sync that owns it.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { seatDecision, seatSummary } from "../../src/lib/seats";
 
 const source = (path: string) =>
@@ -111,14 +113,18 @@ describe("the number comes from the invoice", () => {
     assert.equal((stripe.match(/stripeSeats: seats,/g) ?? []).length, 2, "update and create both write it");
   });
 
-  it("has a column to store it in, added by a migration", () => {
+  it("has a column to store it in, backed by committed migration SQL", () => {
     const schema = readFileSync(new URL("../../prisma/schema.prisma", import.meta.url), "utf8");
     assert.match(schema, /stripeSeats\s+Int\?/);
-    const migration = readFileSync(
-      new URL("../../prisma/migrations/20261013000000_add_subscription_seats/migration.sql", import.meta.url),
-      "utf8",
-    );
-    assert.match(migration, /ALTER TABLE "Subscription" ADD COLUMN "stripeSeats" INTEGER;/);
+    // Reads every committed migration, not one dated file: the history was
+    // consolidated into a single Postgres init (chore/postgres), and a future
+    // reshape must not silently drop the column's only executable proof.
+    const dir = fileURLToPath(new URL("../../prisma/migrations", import.meta.url));
+    const sql = readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readFileSync(join(dir, entry.name, "migration.sql"), "utf8"))
+      .join("\n");
+    assert.match(sql, /"stripeSeats" INTEGER/);
   });
 
   it("only meters a workspace that is actually billed", () => {
