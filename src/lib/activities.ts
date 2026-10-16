@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { Prisma, Activity } from "@prisma/client";
+import { Prisma, Activity } from "@/generated/prisma/client";
 
 /**
  * The stable, provider-derived key that makes a re-delivered webhook a no-op
