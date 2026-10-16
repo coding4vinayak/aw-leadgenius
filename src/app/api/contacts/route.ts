@@ -7,6 +7,7 @@ import { pageParams } from "@/lib/pagination";
 import { asStrings, missingIds, unknownIdsError } from "@/lib/ids";
 import { validateBody } from "@/lib/validate";
 import { CONTACT_CREATE } from "@/lib/fields";
+import { triggerWebhooks } from "@/lib/webhooks";
 
 export const dynamic = "force-dynamic";
 
@@ -89,6 +90,11 @@ async function POST_impl(request: Request) {
       console.warn(`contact ${contact.id} created; enrichment not queued — Redis is unreachable`);
     }
   }
+
+  // After the row and any enrichment job are committed, and best-effort by
+  // construction: `triggerWebhooks` never throws, so a subscriber that is down
+  // cannot turn a 201 into a 500.
+  void triggerWebhooks(workspaceId, "contact.created", { contact });
 
   return NextResponse.json(contact, { status: 201 });
 }

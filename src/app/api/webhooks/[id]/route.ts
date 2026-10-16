@@ -3,6 +3,7 @@ import { withAuth, assertOwns } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { classifyTarget } from "@/lib/egress";
 import { validateBody, eventNames, NO_FIELD_TO_UPDATE, fieldProblem } from "@/lib/validate";
+import { unknownEventsProblem } from "@/lib/webhooks";
 import { WEBHOOK_PATCH } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -28,9 +29,13 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
 
   // Same rule as POST: the array the column comment describes and the comma
   // string the reader splits are both accepted, and neither reaches Prisma
-  // unchanged.
+  // unchanged. A name this product never emits is refused, not stored.
   const events = body.events === undefined ? undefined : eventNames(body.events);
   if (events && !events.ok) return events.error;
+  if (events?.ok) {
+    const unknown = unknownEventsProblem(events.values);
+    if (unknown) return NextResponse.json({ error: unknown }, { status: 400 });
+  }
 
   const data = { ...input.data, ...(events?.values ? { events: events.values.join(",") } : {}) };
   if (!Object.keys(data).length) return NextResponse.json({ error: NO_FIELD_TO_UPDATE }, { status: 400 });

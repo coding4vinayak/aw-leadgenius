@@ -6,6 +6,7 @@ import { validateItems, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
 import { INBOUND_MESSAGE_EVENT } from "@/lib/fields";
+import { triggerWebhooks } from "@/lib/webhooks";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,18 @@ export async function POST(request: Request) {
       }
       throw error;
     }
+
+    // After the enqueue has succeeded: the 503 path above undoes the flip so a
+    // provider redelivery can replay, and that replay is the delivery that
+    // should notify — not one whose state was rolled back. Best-effort, so a
+    // subscriber's outage never turns a recorded reply into a provider retry.
+    void triggerWebhooks(contact.workspaceId, "reply.received", {
+      contactId: contact.id,
+      enrollmentId: enrollment.id,
+      channel: "LINKEDIN",
+      messageId: message.messageId,
+      preview: message.content,
+    });
   }
 
   return NextResponse.json({ ok: true });

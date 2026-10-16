@@ -181,7 +181,9 @@ POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
 GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily
-POST   /api/webhooks                       # subscribe (HMAC-signed deliveries)
+POST   /api/webhooks                       # subscribe; deliverable events are
+                                           # the three the product emits
+                                           # (see *Webhooks (outbound)*)
 POST   /api/webhooks/email|whatsapp|linkedin  # provider event receivers —
                                              # require x-inbound-timestamp and
                                              # x-inbound-signature (HMAC, see
@@ -196,6 +198,35 @@ automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
 somewhere*), so a four-step sequence arrives as four emails on four days.
+
+## Webhooks (outbound)
+
+`POST /api/webhooks` takes `{ workspaceId, url, events }` and answers `201`
+with the created subscription and its `secret`. A subscription can name only
+the events this product emits — an unknown name is refused with the list
+rather than stored, because a subscription filtered on a name nothing sends
+is the same silence as no subscription at all:
+
+| Event | Fires when |
+|---|---|
+| `contact.created` | a contact is created through `POST /api/contacts` |
+| `reply.received` | a LinkedIn or WhatsApp reply is recorded |
+| `sequence.completed` | an enrollment reaches the end of its sequence |
+
+Each delivery is a JSON body `{ id, event, timestamp, data }`, signed
+HMAC-SHA256 over the raw body with the subscription's secret, under two
+headers carrying the same digest: `X-LeadGenius-Signature: <hex>` (this
+product's spelling) and `X-Webhook-Signature: sha256=<hex>`. The second is the
+generic spelling a nuCRM plugin webhook verifies out of the box — point one at
+`/api/tenant/plugins/webhook/{id}` with the same secret and nuCRM accepts the
+call with no adapter in between. `id` names the logical event; a receiver that
+deduplicates on it is already correct on the day delivery grows retries.
+
+Delivery is one attempt, best-effort and never throwing: a receiver that is
+down is logged and skipped, and never fails the contact create or the reply
+ingest that emitted the event. `tests/unit/webhook-events.test.ts` pins the
+wiring — an event declared without an emitter, or an emitter that loses its
+call site, fails the suite.
 
 ## AI (optional)
 
