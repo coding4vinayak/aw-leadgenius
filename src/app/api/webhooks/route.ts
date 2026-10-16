@@ -3,6 +3,7 @@ import { withAuth, authedWorkspaceId } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { classifyTarget } from "@/lib/egress";
 import { validateBody, eventNames, fieldProblem } from "@/lib/validate";
+import { unknownEventsProblem } from "@/lib/webhooks";
 import { WEBHOOK_CREATE } from "@/lib/fields";
 import crypto from "crypto";
 
@@ -31,6 +32,12 @@ async function POST_impl(request: Request) {
   // one form is stored.
   const events = eventNames(body.events);
   if (!events.ok) return events.error;
+
+  // A name this product never emits is a subscription that never fires — the
+  // same dead end the dispatcher's missing callers were, arrived at from the
+  // other side. The typo is refused here instead of stored silently.
+  const unknown = unknownEventsProblem(events.values);
+  if (unknown) return NextResponse.json({ error: unknown }, { status: 400 });
 
   const target = await classifyTarget(input.data.url, "url");
   if (!target.ok) return fieldProblem("url", target.reason);

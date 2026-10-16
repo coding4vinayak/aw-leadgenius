@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { queues, enqueue } from "./queue";
+import { triggerWebhooks } from "./webhooks";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -63,7 +64,7 @@ export async function processSequenceStep(
   const currentStep = steps[enrollment.currentStep];
 
   if (!currentStep) {
-    await completeEnrollment(enrollmentId);
+    await completeEnrollment(enrollment);
     return;
   }
 
@@ -185,10 +186,32 @@ function calculateNextAction(step: SequenceStepConfig): Date {
   return next;
 }
 
-async function completeEnrollment(enrollmentId: string): Promise<void> {
+/**
+ * The enrollment finished its sequence, and that is the CRM-signal moment:
+ * `sequence.completed` is emitted after the write that makes the event true,
+ * with the tuple a receiver needs to join back (enrollment, contact, sequence).
+ * Best-effort — `triggerWebhooks` never throws, so a subscriber cannot fail a
+ * queue job whose real work already committed.
+ *
+ * The workspace is read through the campaign: `Enrollment` has no column of its
+ * own for it, and the row arrives here with that relation included.
+ */
+async function completeEnrollment(enrollment: {
+  id: string;
+  contactId: string;
+  sequenceId: string;
+  campaign: { workspaceId: string };
+}): Promise<void> {
+  const completedAt = new Date();
   await prisma.enrollment.update({
-    where: { id: enrollmentId },
-    data: { status: "COMPLETED", completedAt: new Date() },
+    where: { id: enrollment.id },
+    data: { status: "COMPLETED", completedAt },
+  });
+  void triggerWebhooks(enrollment.campaign.workspaceId, "sequence.completed", {
+    enrollmentId: enrollment.id,
+    contactId: enrollment.contactId,
+    sequenceId: enrollment.sequenceId,
+    completedAt: completedAt.toISOString(),
   });
 }
 

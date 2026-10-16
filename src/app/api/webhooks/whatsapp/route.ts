@@ -7,6 +7,7 @@ import { validateBody, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
 import { INBOUND_MESSAGE_EVENT } from "@/lib/fields";
+import { triggerWebhooks } from "@/lib/webhooks";
 
 export const dynamic = "force-dynamic";
 
@@ -50,10 +51,12 @@ export async function POST(request: Request) {
   const { contactId } = await handleIncomingWhatsApp(body);
   if (!contactId) return NextResponse.json({ ok: true });
 
-  // Find active enrollment for this contact
+  // Find active enrollment for this contact. The campaign is joined because
+  // this row has no `workspaceId` of its own — the workspace comes through it.
   const enrollment = await prisma.enrollment.findFirst({
     where: { contactId, status: "ACTIVE" },
     orderBy: { enrolledAt: "desc" },
+    include: { campaign: { select: { workspaceId: true } } },
   });
   if (!enrollment) return NextResponse.json({ ok: true });
 
@@ -90,6 +93,17 @@ export async function POST(request: Request) {
     }
     throw error;
   }
+
+  // After the enqueue has succeeded — the 503 path above undoes the flip and
+  // earns a Twilio redelivery, and that replay should be the one that notifies.
+  // Best-effort, so a subscriber is never Twilio's problem.
+  void triggerWebhooks(enrollment.campaign.workspaceId, "reply.received", {
+    contactId: enrollment.contactId,
+    enrollmentId: enrollment.id,
+    channel: "WHATSAPP",
+    messageId: message.messageId,
+    preview: message.content,
+  });
 
   return NextResponse.json({ ok: true });
 }
