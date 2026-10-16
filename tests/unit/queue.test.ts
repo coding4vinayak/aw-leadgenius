@@ -452,7 +452,10 @@ if (probeUrl) {
       const IORedis = (await import("ioredis")).default;
 
       const queue = mod.queues.analytics;
-      const shared = await queue.waitUntilReady();
+      // bullmq 6: waitUntilReady() resolves void; the raw Redis client lives on
+      // the backend now, which is what the db assertion below is asking about.
+      await queue.waitUntilReady();
+      const shared = await queue.getBackend().client;
       assert.equal((shared as unknown as { options?: { db?: number } }).options?.db, expectedDb,
         "the producer must write where this process was told to, not where the import-time default points");
       assert.equal(await queue.getWaitingCount(), 0, "a scratch db starts this queue empty");
@@ -517,7 +520,8 @@ if (probeUrl) {
       const IORedis = (await import("ioredis")).default;
 
       const queue = mod.queues.warmup;
-      const shared = await queue.waitUntilReady();
+      await queue.waitUntilReady();
+      const shared = await queue.getBackend().client;
       assert.equal((shared as unknown as { options?: { db?: number } }).options?.db, expectedDb,
         "the producer must write where this process was told, not the import-time default");
 
@@ -569,7 +573,8 @@ if (probeUrl) {
       const IORedis = (await import("ioredis")).default;
 
       const queue = mod.queues.sequence;
-      const shared = await queue.waitUntilReady();
+      await queue.waitUntilReady();
+      const shared = await queue.getBackend().client;
       assert.equal((shared as unknown as { options?: { db?: number } }).options?.db, expectedDb,
         "the producer must write where this process was told, not the import-time default");
       assert.equal(await queue.getCompletedCount(), 0, "the scratch sequence queue starts with no completed job");
@@ -627,7 +632,8 @@ if (probeUrl) {
 
       // Touch all six the way /api/health does, then ask the connection where it is.
       for (const key of Object.keys(mod.queues)) void mod.queues[key as keyof typeof mod.queues];
-      const client = await first.waitUntilReady();
+      await first.waitUntilReady();
+      const client = await first.getBackend().client;
       assert.equal((client as unknown as { options?: { db?: number } }).options?.db, expectedDb,
         "the probe must land on the db it was given, not on the import-time default");
 
