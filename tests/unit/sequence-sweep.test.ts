@@ -204,3 +204,25 @@ describe("the grep that found this, kept", () => {
     assert.match(schema, /@@index\(\[nextActionAt\]\)/);
   });
 });
+
+describe("the account a step sends through belongs to the enrollment's workspace", () => {
+  it("passes the campaign's workspace, the only copy the row carries", () => {
+    // `Enrollment` has no `workspaceId` column; the workspace lives on the
+    // campaign the fetch already includes. The engine read
+    // `enrollment.workspaceId` under an `any`-typed parameter — compiled, and
+    // `undefined` at runtime — and Prisma reads an undefined filter as no
+    // filter, so `selectSendingAccount` searched every workspace's accounts by
+    // reputation. A tenant with none eligible could send through another
+    // tenant's — the wrong email from the wrong domain, on someone else's
+    // sender reputation.
+    assert.match(engine, /selectSendingAccount\(enrollment\.campaign\.workspaceId, step\.channel\)/);
+    assert.doesNotMatch(engine, /enrollment\.workspaceId/);
+  });
+
+  it("types the enrollment so the wrong field cannot compile back in", () => {
+    // The `any` was the bug's enabler: it is what made a column that does not
+    // exist read as a value instead of a type error.
+    assert.match(engine, /async function executeStep\(enrollment: StepEnrollment,/);
+    assert.match(engine, /type StepEnrollment = \{[\s\S]*?campaign: \{ workspaceId: string \};[\s\S]*?\};/);
+  });
+});

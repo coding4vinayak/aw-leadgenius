@@ -113,12 +113,30 @@ async function evaluateStepConditions(
   }
 }
 
-async function executeStep(enrollment: any, step: SequenceStepConfig): Promise<void> {
+/**
+ * What a step needs from its enrollment — and deliberately not `any`.
+ *
+ * The workspace lives on the campaign: `Enrollment` has no column for it, and
+ * `enrollment.workspaceId` compiled under `any` while being `undefined` at
+ * runtime. Prisma reads an undefined filter as no filter, so the account
+ * lookup below searched every workspace's accounts and a tenant with none of
+ * its own could send through another tenant's. Typed here, that read cannot
+ * come back: the field the lookup needs is the one the include provides.
+ */
+type StepEnrollment = {
+  id: string;
+  contactId: string;
+  metadata: unknown;
+  contact: unknown;
+  campaign: { workspaceId: string };
+};
+
+async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig): Promise<void> {
   const template = step.templateId ? await prisma.template.findUnique({ where: { id: step.templateId } }) : null;
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;
 
-  const sendingAccount = await selectSendingAccount(enrollment.workspaceId, step.channel);
+  const sendingAccount = await selectSendingAccount(enrollment.campaign.workspaceId, step.channel);
   if (!sendingAccount) throw new Error(`No active sending account for channel ${step.channel}`);
 
   const sentMessage = await prisma.sentMessage.create({
