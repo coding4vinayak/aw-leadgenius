@@ -40,7 +40,11 @@ async function POST_impl(request: Request) {
 
   const input = validateBody(body, SEQUENCE_CREATE);
   if (!input.ok) return input.error;
-  const { campaignId } = input.data;
+  // `campaignId` is a create-time link, not a column on Sequence: spreading it
+  // into the create below is Prisma's "Unknown argument `campaignId`" — a 500
+  // for every caller that used the documented way to attach a sequence to a
+  // campaign. The block after the steps writes the CampaignSequence row.
+  const { campaignId, ...sequenceData } = input.data;
 
   // Steps come from the same declared-field table as everything else, because
   // the loop this replaces got two shapes wrong in opposite directions. A
@@ -72,7 +76,7 @@ async function POST_impl(request: Request) {
   const sequence = await prisma.sequence.create({
     data: {
       workspaceId,
-      ...input.data,
+      ...sequenceData,
       // The caller's own step objects, not the validated subset: this column is
       // free-form JSON, and dropping a key the route happens not to declare is
       // the silent kind of wrong. The SequenceStep rows below take the
