@@ -182,7 +182,7 @@ GET    /api/sending-accounts?workspaceId=  # channel accounts + health
 POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
-GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily
+GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attribution
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -200,6 +200,26 @@ automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
 somewhere*), so a four-step sequence arrives as four emails on four days.
+
+## Attribution (read-only)
+
+`GET /api/analytics/{workspaceId}?type=attribution&days=14` answers the question a
+campaign review actually asks — *which channel and which A/B arm earned the replies* —
+from the same `Activity` rows the daily engine rolls up (`src/lib/attribution.ts`).
+Channel comes from the event's own `channel` column, not the sequence's: a MULTI
+sequence sends email *and* WhatsApp, and grouping by the sequence would ask "which
+channel" of a row that used both. Both ends of the window snap to local midnight —
+the same bucketing `AnalyticsDaily` stores under — because a partial day cannot be
+compared honestly.
+
+The response carries a `drift` array: every counter where the raw fold and the
+materialized rollup disagree. They match by construction, so a nonzero drift means a
+rollup job is missing or short (the #65 queue-outage path) — the disagreement is
+surfaced rather than hidden. The dashboard shows all of this to a signed-in session
+under **“What is working”** (7/14/30-day windows), through a server action whose
+workspace comes from the session, never the form — the `createFirstKey` rule. The
+grouping arithmetic is pure (`foldAttribution`, `diffCounters`) and pinned without a
+database in `tests/unit/attribution.test.ts`.
 
 ## Webhooks (outbound)
 

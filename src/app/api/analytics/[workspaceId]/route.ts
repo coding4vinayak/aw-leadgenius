@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { withAuth, authedWorkspaceId, assertOwns } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
-import { getWorkspaceOverview, getCampaignAnalytics, getSequenceAnalytics, getDailyAnalytics } from "@/lib/analytics";
+import { getWorkspaceOverview, getCampaignAnalytics, getSequenceAnalytics, getDailyAnalytics, dayBucket } from "@/lib/analytics";
+import { getAttribution } from "@/lib/attribution";
 import { intParam } from "@/lib/pagination";
 
 export const dynamic = "force-dynamic";
@@ -38,6 +39,14 @@ async function GET_impl(request: Request, { params }: { params: Promise<{ worksp
       const date = searchParams.get("date") ? new Date(searchParams.get("date")!) : new Date();
       const daily = await getDailyAnalytics(workspaceId, date);
       return NextResponse.json(daily);
+
+    case "attribution": {
+      // Day-bucketed window (see getAttribution): `days` counts whole days
+      // back from today's midnight, so the default compares complete days only.
+      const aStart = startDate ? new Date(startDate) : new Date(dayBucket(new Date()).getTime() - days * 86400000);
+      const aEnd = endDate ? new Date(endDate) : new Date(dayBucket(new Date()).getTime() + 86400000);
+      return NextResponse.json(await getAttribution(workspaceId, aStart, aEnd));
+    }
 
     default:
       return NextResponse.json({ error: "Invalid type" }, { status: 400 });
