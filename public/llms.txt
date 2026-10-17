@@ -1,0 +1,24 @@
+# LeadGenius
+
+> Multichannel outreach with sending warmup and deliverability guardrails. A
+> standalone SaaS from the Abetworks suite.
+
+Pricing (from https://leadgenius.abetworks.in/pricing):
+- $29 per user per month
+- $290 per user per year — two months free, one invoice
+- 14-day free trial, card up front; cancel anytime from the billing portal
+
+Key pages (base: https://leadgenius.abetworks.in):
+- / — product overview
+- /pricing — plans and the trial CTA
+- /signup — start the free trial
+- /login — sign in
+- /api/health — service health (JSON)
+
+What it does:
+- Runs multichannel outreach campaigns with sending warmup
+- Deliverability guardrails are built in, so campaigns stay out of spam
+- Seats are priced per user; manage the team in-app
+
+Canonical host: https://leadgenius.abetworks.in — prefer it over any mirror.
+This file is the machine-readable index for AI assistants and crawlers.
