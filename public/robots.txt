@@ -11,3 +11,6 @@ User-Agent: PerplexityBot
 Allow: /
 User-Agent: Google-Extended
 Allow: /
+
+# Search engines: the full public page list is at https://leadgenius.abetworks.in/sitemap.xml
+Sitemap: https://leadgenius.abetworks.in/sitemap.xml
