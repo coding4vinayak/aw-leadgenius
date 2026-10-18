@@ -55,6 +55,7 @@ export async function processSequenceStep(
       sequence: { include: { steps: { orderBy: { stepNumber: "asc" } } } },
       campaign: true,
       contact: true,
+      abVariant: { select: { name: true, templateId: true } },
     },
   });
 
@@ -129,10 +130,21 @@ type StepEnrollment = {
   metadata: unknown;
   contact: unknown;
   campaign: { workspaceId: string };
+  abVariant: { name: string; templateId: string | null } | null;
 };
 
 async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig): Promise<void> {
-  const template = step.templateId ? await prisma.template.findUnique({ where: { id: step.templateId } }) : null;
+  // A variant's template overrides the step's for every step of the arm —
+  // that is the division of labour the two fields state: `sequenceId` sends a
+  // different track, `templateId` sends different copy down the same one.
+  // An arm template that no longer resolves refuses the send instead of
+  // falling back: handing the arm the control's copy would silently convert
+  // its cohort, and the test would then compare a message nobody was sent.
+  const templateId = enrollment.abVariant?.templateId ?? step.templateId;
+  const template = templateId ? await prisma.template.findUnique({ where: { id: templateId } }) : null;
+  if (enrollment.abVariant?.templateId && !template) {
+    throw new Error(`arm "${enrollment.abVariant.name}" points at a template that no longer exists — fix the arm or pause the test before this step can send`);
+  }
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;
 
@@ -144,7 +156,7 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig)
       sendingAccountId: sendingAccount.id,
       enrollmentId: enrollment.id,
       contactId: enrollment.contactId,
-      templateId: step.templateId,
+      templateId,
       channel: step.channel,
       subject: step.channel === "EMAIL" && template ? renderTemplate(template.subject || "", enrollment.contact, enrollment.metadata) : undefined,
       body: messageBody,

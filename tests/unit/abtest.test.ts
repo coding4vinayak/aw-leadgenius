@@ -142,3 +142,33 @@ describe("the routes wire the pieces the unit cannot see", () => {
     assert.doesNotMatch(create, /workspaceId: body\.workspaceId/);
   });
 });
+
+describe("the sequence engine renders the arm's template, not a silent fallback", () => {
+  const engine = source("../../src/lib/sequence-engine.ts");
+
+  it("the step's enrollment read carries the variant's template", () => {
+    assert.match(engine, /abVariant: \{ select: \{ name: true, templateId: true \} \}/);
+    assert.match(engine, /abVariant: \{ name: string; templateId: string \| null \} \| null;/);
+  });
+
+  // The accepted-but-ignored gap this round closes: a variant template must win
+  // over the step's, and the persisted message must record the template it was
+  // actually rendered from — the audit row cannot cite the step's copy.
+  it("the arm template overrides the step template and is the one recorded", () => {
+    assert.match(engine, /const templateId = enrollment\.abVariant\?\.templateId \?\? step\.templateId/);
+    assert.match(engine, /template = templateId \? await prisma\.template\.findUnique/);
+    assert.match(engine, /templateId,\n      channel: step\.channel/);
+  });
+
+  // Falling back would hand the arm the control's copy and convert its cohort
+  // without anyone noticing. The send stops and names the arm.
+  it("a vanished arm template refuses the send by name instead of falling back", () => {
+    assert.match(engine, /if \(enrollment\.abVariant\?\.templateId && !template\)/);
+    assert.match(engine, /arm "\$\{enrollment\.abVariant\.name\}" points at a template that no longer exists/);
+  });
+
+  it("an arm without a template still renders the step's", () => {
+    assert.match(engine, /\?\? step\.templateId/);
+    assert.doesNotMatch(engine, /templateId = enrollment\.abVariant\?\.templateId \|\| step\.templateId/);
+  });
+});

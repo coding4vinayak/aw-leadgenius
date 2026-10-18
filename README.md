@@ -258,6 +258,15 @@ honestly empty. An arm whose sequence was deleted or emptied since the test was
 created answers `409` with the arm's name: pausing the test is the fix, silently
 enrolling everyone into the fallback arm is not.
 
+The two variant fields divide the labour: `sequenceId` sends a different
+*track*, `templateId` sends different *copy down the same one*. When a variant
+carries a template, every step of that arm renders from it — subject included —
+and the `SentMessage` records the template it was actually rendered from, not
+the step's. An arm template deleted mid-test **refuses the send by name**
+instead of falling back to the step's copy: a fallback would hand the arm the
+control's message and silently convert its cohort, so the test would compare a
+message nobody was sent.
+
 ## Webhooks (outbound)
 
 `POST /api/webhooks` takes `{ workspaceId, url, events }` and answers `201`
