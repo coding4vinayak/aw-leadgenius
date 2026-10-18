@@ -69,49 +69,177 @@ export async function processSequenceStep(
     return;
   }
 
-  const shouldProceed = await evaluateStepConditions(enrollment, currentStep, triggerType, now);
-  if (!shouldProceed) return;
-
-  await executeStep(enrollment, currentStep);
+  const outcome = stepOutcome(currentStep, triggerType, await stepFacts(enrollment.id, enrollment.nextActionAt, currentStep, now));
+  switch (outcome.kind) {
+    case "wait":
+      return;
+    case "send":
+      await executeStep(enrollment, currentStep);
+      return;
+    case "skip":
+      await moveTo(enrollment.id, enrollment.currentStep + 1, now);
+      return;
+    case "end":
+      await completeEnrollment(enrollment);
+      return;
+    case "branch":
+      await branchTo(enrollment.id, steps, currentStep, outcome.stepNumber, now);
+      return;
+  }
 }
 
-async function evaluateStepConditions(
-  enrollment: any,
+/** The database half of the condition decision: only the facts the step asks about are read. */
+async function stepFacts(
+  enrollmentId: string,
+  nextActionAt: Date | null,
   step: SequenceStepConfig,
-  triggerType: string,
   now: Date,
-): Promise<boolean> {
+): Promise<StepFacts> {
+  const condition = step.conditions?.if;
+  return {
+    due: stepIsDue(nextActionAt, now),
+    replied: condition === "no_reply" ? await hasReply(enrollmentId) : false,
+    opened: condition === "no_open" ? await hasOpen(enrollmentId) : false,
+    clicked: condition === "no_click" ? await hasClick(enrollmentId) : false,
+  };
+}
+
+/**
+ * Advance past a step without sending it — the `skip` action, and the move
+ * `branch` shares.
+ *
+ * The wait is set to `now`, not null: the sweep's clause deliberately excludes
+ * a null `nextActionAt` ("an unscheduled row is not a due one"), so clearing it
+ * would park the enrollment until a human noticed. `now` makes the step that
+ * follows this one the next tick's work.
+ */
+async function moveTo(enrollmentId: string, index: number, now: Date): Promise<void> {
+  await prisma.enrollment.update({
+    where: { id: enrollmentId },
+    data: { currentStep: index, nextActionAt: now },
+  });
+}
+
+async function branchTo(
+  enrollmentId: string,
+  steps: SequenceStepConfig[],
+  from: SequenceStepConfig,
+  stepNumber: number,
+  now: Date,
+): Promise<void> {
+  const index = steps.findIndex((s) => s.stepNumber === stepNumber);
+  // Rows outlive the request that validated them: a target can be validated at
+  // create and missing after an edit. Refusing by name beats walking off the
+  // end of the array, which is a silent `completeEnrollment`.
+  if (index === -1) {
+    throw new Error(`step ${from.stepNumber} branches to step ${stepNumber}, which the sequence does not have`);
+  }
+  await moveTo(enrollmentId, index, now);
+}
+
+/** What the engine decided the current step should do. */
+export type StepOutcome =
+  | { kind: "send" }
+  | { kind: "wait" }
+  | { kind: "skip" }
+  | { kind: "end" }
+  | { kind: "branch"; stepNumber: number };
+
+/** The condition names a step may ask about — `no_*` reads wait, the rest are events. */
+export const STEP_CONDITIONS = ["no_reply", "no_open", "no_click", "replied", "bounced", "clicked"] as const;
+/** What a satisfied condition does. `next` is the default and the historical behavior. */
+export const STEP_ACTIONS = ["next", "skip", "end", "branch"] as const;
+
+export type StepFacts = {
+  /** Whether the step's recorded wait has ended (`stepIsDue`). */
+  due: boolean;
+  replied: boolean;
+  opened: boolean;
+  clicked: boolean;
+};
+
+/**
+ * The whole condition decision, pure and testable.
+ *
+ * A step with no condition of its own has nothing to check but the calendar —
+ * `facts.due` is that calendar, and it is the whole delay product: `delayDays:
+ * 3` between two emails means three days apart, not the `SENT` job the send
+ * worker queues the moment the previous message leaves spending the next step
+ * in the same second.
+ *
+ * Before this, `then` was destructured into a variable nothing read: a step
+ * configured `{if: "no_reply", then: "end"}` sent the follow-up anyway, a
+ * `branch` never branched, and an unknown `if` fell into a `default: return
+ * true` that spent the step on the next trigger of any kind. The README sells
+ * "branch conditions"; these four actions are that sentence made true.
+ */
+export function stepOutcome(step: SequenceStepConfig, triggerType: SequenceTrigger, facts: StepFacts): StepOutcome {
   if (!step.conditions) {
-    // A step with no condition has nothing to check but the calendar, and the
-    // calendar is the whole product: `delayDays: 3` between two emails means the
-    // prospect gets them three days apart. Without this line the `SENT` job the
-    // send worker queues the moment a message leaves spends the next step in the
-    // same second — which is the failure `POST /api/sequences` already describes
-    // about a lost delay ("scheduled a two-week sequence to run in a day"),
-    // arrived at from the other side. It is also the reason a follow-up lands on
-    // a domain that has not warmed up yet: the throttle and reputation floors in
-    // `selectSendingAccount` exist for spacing this app is not doing.
-    return stepIsDue(enrollment.nextActionAt, now);
+    return facts.due ? { kind: "send" } : { kind: "wait" };
   }
+  const conditions = step.conditions;
 
-  const { if: condition, then: action } = step.conditions;
+  const satisfied = (() => {
+    switch (conditions.if) {
+      case "no_reply": return triggerType === "TIME_ELAPSED" && !facts.replied;
+      case "no_open": return triggerType === "TIME_ELAPSED" && !facts.opened;
+      case "no_click": return triggerType === "TIME_ELAPSED" && !facts.clicked;
+      case "replied": return triggerType === "REPLIED";
+      case "bounced": return triggerType === "BOUNCED";
+      case "clicked": return triggerType === "CLICKED";
+      default:
+        throw new Error(`step ${step.stepNumber} has unknown condition "${String(conditions.if)}" (allowed: ${STEP_CONDITIONS.join(", ")})`);
+    }
+  })();
+  if (!satisfied) return { kind: "wait" };
 
-  switch (condition) {
-    case "no_reply":
-      return triggerType === "TIME_ELAPSED" && !await hasReply(enrollment.id);
-    case "no_open":
-      return triggerType === "TIME_ELAPSED" && !await hasOpen(enrollment.id);
-    case "no_click":
-      return triggerType === "TIME_ELAPSED" && !await hasClick(enrollment.id);
-    case "replied":
-      return triggerType === "REPLIED";
-    case "bounced":
-      return triggerType === "BOUNCED";
-    case "clicked":
-      return triggerType === "CLICKED";
+  switch (conditions.then ?? "next") {
+    case "next": return { kind: "send" };
+    case "skip": return { kind: "skip" };
+    case "end": return { kind: "end" };
+    case "branch": {
+      const target = conditions.branchToStep;
+      if (!Number.isInteger(target) || (target as number) <= step.stepNumber) {
+        throw new Error(`step ${step.stepNumber} branches to ${JSON.stringify(target)} — branchToStep must name a later step number`);
+      }
+      return { kind: "branch", stepNumber: target as number };
+    }
     default:
-      return true;
+      throw new Error(`step ${step.stepNumber} has unknown action "${String(conditions.then)}" (allowed: ${STEP_ACTIONS.join(", ")})`);
   }
+}
+
+/**
+ * The write-time twin of `stepOutcome`'s refusals: returns the problem with one
+ * step's `conditions`, or null when the engine can honour them. The route names
+ * the step index; the engine refuses the same configurations again at run time,
+ * because rows outlive the request that made them.
+ */
+export function conditionProblem(
+  step: { stepNumber: number; conditions?: unknown },
+  stepNumbers: number[],
+): string | null {
+  const conditions = step.conditions;
+  if (conditions === undefined || conditions === null) return null;
+  if (typeof conditions !== "object" || Array.isArray(conditions)) return "conditions must be an object";
+
+  const { if: condition, then: action, branchToStep } = conditions as Record<string, unknown>;
+  if (typeof condition !== "string" || !(STEP_CONDITIONS as readonly string[]).includes(condition)) {
+    return `conditions.if must be one of ${STEP_CONDITIONS.join(", ")}`;
+  }
+  if (action !== undefined && (typeof action !== "string" || !(STEP_ACTIONS as readonly string[]).includes(action))) {
+    return `conditions.then must be one of ${STEP_ACTIONS.join(", ")}`;
+  }
+  if (branchToStep !== undefined || action === "branch") {
+    if (action !== "branch") return 'conditions.branchToStep only applies when conditions.then is "branch"';
+    if (!Number.isInteger(branchToStep) || (branchToStep as number) <= step.stepNumber) {
+      return "conditions.branchToStep must name a later step number of this sequence";
+    }
+    if (!stepNumbers.includes(branchToStep as number)) {
+      return `conditions.branchToStep names step ${String(branchToStep)}, which this sequence does not have`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -144,6 +272,14 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig)
   const template = templateId ? await prisma.template.findUnique({ where: { id: templateId } }) : null;
   if (enrollment.abVariant?.templateId && !template) {
     throw new Error(`arm "${enrollment.abVariant.name}" points at a template that no longer exists — fix the arm or pause the test before this step can send`);
+  }
+  // The delete route refuses to remove a template a step still references
+  // (both FKs are `SetNull`), so this guard is what remains for the states a
+  // direct database edit can produce: a dangling id must refuse by name, not
+  // send the placeholder `Step N` body with the channel's "New message"
+  // subject to a real prospect.
+  if (templateId && !template) {
+    throw new Error(`step ${step.stepNumber} points at a template that no longer exists — attach a new template before it can send`);
   }
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;

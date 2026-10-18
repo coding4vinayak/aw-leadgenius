@@ -265,10 +265,13 @@ The two variant fields divide the labour: `sequenceId` sends a different
 *track*, `templateId` sends different *copy down the same one*. When a variant
 carries a template, every step of that arm renders from it — subject included —
 and the `SentMessage` records the template it was actually rendered from, not
-the step's. An arm template deleted mid-test **refuses the send by name**
-instead of falling back to the step's copy: a fallback would hand the arm the
-control's message and silently convert its cohort, so the test would compare a
-message nobody was sent.
+the step's. A template that a sequence step or a test's arm still references
+**cannot be deleted** — `DELETE /api/templates/{id}` answers 409 naming the
+sequence and step (or the test and arm). The refusal lives at the delete on
+purpose: both references are optional foreign keys whose database action is
+`SetNull`, so deleting the row would erase the reference before any send could
+see it — the arm would fall back to the step's copy and silently convert its
+cohort, and a step would send placeholder copy no one chose.
 
 `PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
 RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
