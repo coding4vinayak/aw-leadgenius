@@ -6,6 +6,7 @@ import { signOut } from "@/app/auth-actions";
 import { switchWorkspaceAction } from "@/app/member-actions";
 import { createFirstKey } from "@/app/key-actions";
 import { ApiKeyOnboarding } from "@/components/api-key-onboarding";
+import { AttributionPanel } from "@/components/attribution-panel";
 import { AiPanel, type AiField } from "@/components/ai-panel";
 import { ManageBillingButton } from "@/components/manage-billing";
 
@@ -219,6 +220,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             sub={sentCount > 0 ? `${((repliedCount / sentCount) * 100).toFixed(1)}% reply rate` : "no sends yet"}
           />
         </div>
+
+        {session && (
+          <div className="mb-8">
+            <AttributionPanel />
+          </div>
+        )}
 
         <div className="bg-white rounded-2xl shadow-sm p-6">
           <h2 className="text-lg font-bold text-gray-900 mb-4">Campaigns</h2>

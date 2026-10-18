@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { pageParams } from "@/lib/pagination";
 import { validateBody, validateItems, type Validated } from "@/lib/validate";
 import { SEQUENCE_CREATE, SEQUENCE_STEP } from "@/lib/fields";
+import { conditionProblem } from "@/lib/sequence-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +60,7 @@ async function POST_impl(request: Request) {
   const steps = validateItems<SequenceStepInput>(body.stepsConfig, "stepsConfig", SEQUENCE_STEP, { max: 50 });
   if (!steps.ok) return steps.error;
 
+  const stepNumbers = steps.items.map((step) => step.stepNumber);
   for (const [i, step] of steps.items.entries()) {
     // A step may name no template or a real one; anything else is a 400, not
     // a skip. Silently ignoring a `templateId: 42` would write a step whose
@@ -70,6 +72,15 @@ async function POST_impl(request: Request) {
       if (tpl.workspaceId !== workspaceId) {
         return NextResponse.json({ error: `stepsConfig[${i}]: template belongs to another workspace` }, { status: 403 });
       }
+    }
+
+    // Conditions are free-form JSON until this point, and the engine reads
+    // `if` / `then` / `branchToStep` out of them: a typo must be a 400 naming
+    // the accepted set, not a step that silently spends itself on the next
+    // trigger of any kind.
+    const problem = conditionProblem(step, stepNumbers);
+    if (problem) {
+      return NextResponse.json({ error: `stepsConfig[${i}]: ${problem}` }, { status: 400 });
     }
   }
 

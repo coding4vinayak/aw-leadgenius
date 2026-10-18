@@ -4,6 +4,7 @@ import IORedis from "ioredis";
 // module's queue, and the worker below needs the job shape it carries.
 import type { CancellationData, TrialNudgeData } from "./billing-jobs";
 import { prisma } from "./db";
+import { recordInboundActivity, activityIdempotencyKey } from "./activities";
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: null,
@@ -210,6 +211,9 @@ export async function startWorkers() {
   const { enrichContact } = await import("./enrichment");
   const { deliverWebhook } = await import("./webhooks");
   const { rollupDay } = await import("./analytics");
+  // Static would close the cycle the dynamic one above already avoids:
+  // analytics.ts imports this module's queues to enqueue.
+  const { enqueueDailyRollup } = await import("./analytics");
   const { runWarmup } = await import("./warmup");
   const { runBillingJob } = await import("./billing-jobs");
   const { runDueSequenceSteps } = await import("./scheduler");
@@ -254,6 +258,42 @@ export async function startWorkers() {
     });
 
     if (result.success && msg.enrollmentId) {
+      // The send happened, and this process knows it before any provider
+      // posts back: record the SENT activity so the `sent` counter in both
+      // analytics engines is about the campaign's actual traffic even when
+      // the provider's delivery events are not wired up. The email webhook
+      // guards its own SENT insert against this row, so the provider event
+      // corroborates the send rather than double-counting it. It runs before
+      // the sequence enqueue below because a failed `enqueue` throws and
+      // fails the job — and a retried send job means a re-sent email; the
+      // own-record must already exist for the retry to skip it.
+      const providerRef = result.providerId ?? msg.id;
+      try {
+        const known = await prisma.activity.findFirst({
+          where: { enrollmentId: msg.enrollmentId, type: "SENT", messageId: providerRef },
+          select: { id: true },
+        });
+        if (!known) {
+          const activity = await recordInboundActivity(
+            activityIdempotencyKey({ channel: msg.channel, messageId: providerRef, activityType: "SENT" }),
+            {
+              enrollmentId: msg.enrollmentId,
+              contactId: msg.contactId,
+              type: "SENT",
+              channel: msg.channel,
+              messageId: providerRef,
+              metadata: { source: "send-worker" },
+            },
+          );
+          if (activity) await enqueueDailyRollup(msg.enrollmentId, activity.createdAt);
+        }
+      } catch (error) {
+        // Best-effort by necessity: a dead Redis cannot let the rollup
+        // enqueue fail the send job (retried email), and the next provider
+        // event of the day recomputes the whole window anyway.
+        console.warn(`SENT activity not recorded for message ${msg.id}:`, error instanceof Error ? error.message : error);
+      }
+
       await enqueue(queues.sequence, "process-step", { enrollmentId: msg.enrollmentId, activityType: "SENT" });
     }
   }, { connection, concurrency: 10 }));

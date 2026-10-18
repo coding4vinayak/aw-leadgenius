@@ -86,16 +86,21 @@ describe("the engine asks the schedule before it spends a step", () => {
   it("has the wait checked for a step with no condition of its own", () => {
     // The bug is not that conditional follow-ups never fired. It is that an
     // unconditional step was spent by the `SENT` job the moment the previous send
-    // landed, so `delayDays: 3` meant three seconds.
+    // landed, so `delayDays: 3` meant three seconds. The check lives in the pure
+    // `stepOutcome` now (behavior-tested in sequence-conditions.test.ts) and the
+    // engine still feeds it `stepIsDue`'s answer for the caller's instant.
     assert.match(
       engine,
-      /if \(!step\.conditions\) \{\s*return stepIsDue\(enrollment\.nextActionAt, now\);/,
+      /if \(!step\.conditions\) \{\s*return facts\.due \? \{ kind: "send" \} : \{ kind: "wait" \};/,
     );
   });
 
   it("carries the due check into the signature, so one instant answers both halves", () => {
     assert.match(engine, /triggerType: SequenceTrigger,\s*now: Date = new Date\(\),/);
-    assert.match(engine, /evaluateStepConditions\(enrollment, currentStep, triggerType, now\)/);
+    assert.match(
+      engine,
+      /stepOutcome\(currentStep, triggerType, await stepFacts\(enrollment\.id, enrollment\.nextActionAt, currentStep, now\)\)/,
+    );
   });
 
   it("defines the predicate once, in the engine, and the sweep imports nothing else", () => {
@@ -106,10 +111,10 @@ describe("the engine asks the schedule before it spends a step", () => {
   it("still lets an event trigger do what an event trigger is for", () => {
     // A reply must branch now, not on the calendar. Blocking every non-TIME_ELAPSED
     // trigger would have traded one broken half of the engine for the other.
-    const conditions = /async function evaluateStepConditions[\s\S]*?\n\}/.exec(engine);
-    assert.ok(conditions);
-    assert.doesNotMatch(conditions[0], /if \(triggerType !== "TIME_ELAPSED"\) return/);
-    assert.match(conditions[0], /case "replied":\s*return triggerType === "REPLIED"/);
+    const outcome = /export function stepOutcome[\s\S]*?\n\}/.exec(engine);
+    assert.ok(outcome);
+    assert.doesNotMatch(outcome[0], /if \(triggerType !== "TIME_ELAPSED"\) return/);
+    assert.match(outcome[0], /case "replied": return triggerType === "REPLIED"/);
   });
 });
 

@@ -46,6 +46,18 @@ export async function POST(request: Request) {
     if (!activityType) continue;
 
     if (sentMessage.enrollmentId) {
+      if (activityType === "SENT") {
+        // The send worker records its own SENT row the moment the provider
+        // accepts the message (queue.ts), keyed without a provider timestamp
+        // — so the unique index cannot catch this pair and the guard has to
+        // be the read. A provider that also posts sent/accepted/processed
+        // would otherwise double-count the day every message it acknowledges.
+        const already = await prisma.activity.findFirst({
+          where: { enrollmentId: sentMessage.enrollmentId, type: "SENT", messageId },
+          select: { id: true },
+        });
+        if (already) continue;
+      }
       const activity = await recordInboundActivity(
         activityIdempotencyKey({ channel: "EMAIL", messageId, activityType, timestamp }),
         {

@@ -15,9 +15,11 @@ export interface DailyAnalytics {
 
 /**
  * Local midnight of the day `date` falls in — the same normalization `aggregateAnalytics`
- * buckets on, so a job's key and the row it writes cannot name different days.
+ * buckets on, so a job's key and the row it writes cannot name different days. Exported
+ * because `getAttribution` windows `AnalyticsDaily` reads with this exact normalization;
+ * a second private copy could drift a day at the midnight boundary.
  */
-function dayBucket(date: Date): Date {
+export function dayBucket(date: Date): Date {
   const start = new Date(date);
   start.setHours(0, 0, 0, 0);
   return start;

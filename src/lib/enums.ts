@@ -32,3 +32,5 @@ export const SEQUENCE_STATUSES = ["DRAFT", "ACTIVE", "ARCHIVED"] as const;
 export const CONTACT_STATUSES = ["ACTIVE", "BOUNCED", "UNSUBSCRIBED", "DO_NOT_CONTACT"] as const;
 /** Enrollment.status */
 export const ENROLLMENT_STATUSES = ["ACTIVE", "PAUSED", "COMPLETED", "BOUNCED", "REPLIED", "UNSUBSCRIBED"] as const;
+/** ABTest.status — DRAFT is the column default; the create route arrives RUNNING, and PATCH takes transitions, not DRAFT. */
+export const ABTEST_STATUSES = ["DRAFT", "RUNNING", "PAUSED", "COMPLETED"] as const;

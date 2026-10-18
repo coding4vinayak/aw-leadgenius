@@ -182,7 +182,13 @@ GET    /api/sending-accounts?workspaceId=  # channel accounts + health
 POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
-GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily
+GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attribution
+POST   /api/abtests                        # create a running A/B test (2..10
+                                           # variants, one control, weights sum
+                                           # 100); the next enroll assigns arms
+PATCH  /api/abtests/{id}                   # pause, resume, or complete (naming
+                                           # a winner stamps its confidence —
+                                           # two-proportion z; COMPLETED terminal)
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -200,6 +206,88 @@ automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
 somewhere*), so a four-step sequence arrives as four emails on four days.
+
+## Attribution (read-only)
+
+`GET /api/analytics/{workspaceId}?type=attribution&days=14` answers the question a
+campaign review actually asks — *which channel and which A/B arm earned the replies* —
+from the same `Activity` rows the daily engine rolls up (`src/lib/attribution.ts`).
+Channel comes from the event's own `channel` column, not the sequence's: a MULTI
+sequence sends email *and* WhatsApp, and grouping by the sequence would ask "which
+channel" of a row that used both. Both ends of the window snap to local midnight —
+the same bucketing `AnalyticsDaily` stores under — because a partial day cannot be
+compared honestly.
+
+The response carries a `drift` array: every counter where the raw fold and the
+materialized rollup disagree. They match by construction, so a nonzero drift means a
+rollup job is missing or short (the #65 queue-outage path) — the disagreement is
+surfaced rather than hidden. The dashboard shows all of this to a signed-in session
+under **“What is working”** (7/14/30-day windows), through a server action whose
+workspace comes from the session, never the form — the `createFirstKey` rule. The
+grouping arithmetic is pure (`foldAttribution`, `diffCounters`) and pinned without a
+database in `tests/unit/attribution.test.ts`.
+
+The `sent` counter has two possible sources, and both are wired: the send worker
+records its own `SENT` activity the moment a provider accepts the message — keyed on
+the message id alone, since no provider event time exists yet — and the email webhook
+reads for that row before inserting on a provider `sent`/`accepted`/`processed`
+event, so the provider event **corroborates the send instead of double-counting it**.
+Either way a real send yields exactly one `SENT` row, so attribution and the daily
+rollup agree with each other and with the traffic.
+
+## A/B tests (assignment)
+
+`POST /api/abtests` creates a test and starts it — `status: "RUNNING"` from the
+first breath, because a DRAFT row no enroll ever read is the state this table
+was already in. The body is `{ campaignId, name, hypothesis, variants }` with
+2..10 variants; each variant names a `sequenceId` (and optionally a
+`templateId`) that must exist in the workspace, and the cross-entry rules —
+unique names, exactly one `isControl`, weights summing to exactly 100 — are
+checked in `validateAbTestSemantics` (`src/lib/abtest.ts`), which is where
+they belong: a field validator that sees one entry at a time cannot see them.
+
+The assignment happens at enrollment, and it is deterministic:
+`assignVariant` hashes `sha256(abTestId : contactId)` and walks the variants'
+cumulative weights. Not a draw — a draw would let a retried enroll hop arms and
+contaminate the cohort, and the hash is salted with the test id so the same
+contact lands independently in different tests. The distribution is pinned to
+measured values in `tests/unit/abtest.test.ts` (exact per-arm counts over 2000
+synthetic contact ids), not to "roughly 50/50".
+
+When a RUNNING test covers the campaign, the enrollment takes the **arm's**
+sequence instead of the one the request named, and records `abVariantId` on the
+row — which is what makes attribution's `byVariant` table real rather than
+honestly empty. An arm whose sequence was deleted or emptied since the test was
+created answers `409` with the arm's name: pausing the test is the fix, silently
+enrolling everyone into the fallback arm is not.
+
+The two variant fields divide the labour: `sequenceId` sends a different
+*track*, `templateId` sends different *copy down the same one*. When a variant
+carries a template, every step of that arm renders from it — subject included —
+and the `SentMessage` records the template it was actually rendered from, not
+the step's. A template that a sequence step or a test's arm still references
+**cannot be deleted** — `DELETE /api/templates/{id}` answers 409 naming the
+sequence and step (or the test and arm). The refusal lives at the delete on
+purpose: both references are optional foreign keys whose database action is
+`SetNull`, so deleting the row would erase the reference before any send could
+see it — the arm would fall back to the step's copy and silently convert its
+cohort, and a step would send placeholder copy no one chose.
+
+`PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
+RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
+only RUNNING tests, and enrollments made while paused join no cohort (that is
+the point of pausing). COMPLETED is terminal and names the winner: it must be
+one of the test's own variant names, `completedAt` is stamped, and re-opening
+is refused with 409 — the cohorts are what the verdict was decided on.
+Completing *with* a winner also stamps `confidence`: a two-proportion z on the
+winner's and the control's reply rate, counted live from their Activity rows
+scoped by **variant id** — not the name-keyed `byVariant` rollup, which merges
+cohorts across tests that share arm names. A winner or control that recorded no
+sends is refused with 409: a verdict with no email in either arm is not
+evidence. A negative z is stamped rather than hidden — it means the "winner"
+replied *less* than control on its own numbers.
+`DRAFT` is the column's default but not a transition target: nothing reads it,
+nothing wrote it, and "return to before the test existed" is not a lifecycle.
 
 ## Webhooks (outbound)
 
