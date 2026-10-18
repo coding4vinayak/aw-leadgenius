@@ -221,6 +221,14 @@ workspace comes from the session, never the form — the `createFirstKey` rule. 
 grouping arithmetic is pure (`foldAttribution`, `diffCounters`) and pinned without a
 database in `tests/unit/attribution.test.ts`.
 
+The `sent` counter has two possible sources, and both are wired: the send worker
+records its own `SENT` activity the moment a provider accepts the message — keyed on
+the message id alone, since no provider event time exists yet — and the email webhook
+reads for that row before inserting on a provider `sent`/`accepted`/`processed`
+event, so the provider event **corroborates the send instead of double-counting it**.
+Either way a real send yields exactly one `SENT` row, so attribution and the daily
+rollup agree with each other and with the traffic.
+
 ## Webhooks (outbound)
 
 `POST /api/webhooks` takes `{ workspaceId, url, events }` and answers `201`
