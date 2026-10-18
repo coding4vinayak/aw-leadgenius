@@ -164,6 +164,24 @@ export const ENROLLMENT_CREATE = {
   campaignId: { kind: "text", max: 32 },
 } satisfies Schema;
 
+export const ABTEST_CREATE = {
+  campaignId: { kind: "text", required: true, max: 32 },
+  name: { kind: "text", required: true, max: 80 },
+  hypothesis: { kind: "text", required: true, max: 300 },
+} satisfies Schema;
+
+// The declared half of a variant row: shapes Prisma could not take, or would
+// take wrongly, named at the boundary. The cross-entry rules — names unique,
+// exactly one control, weights summing to 100 — cannot live in a per-field
+// table and sit in `validateAbTestSemantics` (lib/abtest.ts).
+export const ABTEST_VARIANT = {
+  name: { kind: "text", required: true, max: 40 },
+  weight: { kind: "int", required: true, min: 1, max: 100 },
+  isControl: { kind: "bool", required: true },
+  sequenceId: { kind: "text", required: true, max: 32 },
+  templateId: { kind: "text", max: 32 },
+} satisfies Schema;
+
 /**
  * The only field `PATCH /api/enrollments/:id` has ever taken. `nextActionAt`
  * and `currentStep` are the engine's, not the caller's: a client that moves an

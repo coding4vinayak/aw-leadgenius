@@ -183,6 +183,9 @@ POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
 GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attribution
+POST   /api/abtests                        # create a running A/B test (2..10
+                                           # variants, one control, weights sum
+                                           # 100); the next enroll assigns arms
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -228,6 +231,32 @@ reads for that row before inserting on a provider `sent`/`accepted`/`processed`
 event, so the provider event **corroborates the send instead of double-counting it**.
 Either way a real send yields exactly one `SENT` row, so attribution and the daily
 rollup agree with each other and with the traffic.
+
+## A/B tests (assignment)
+
+`POST /api/abtests` creates a test and starts it — `status: "RUNNING"` from the
+first breath, because a DRAFT row no enroll ever read is the state this table
+was already in. The body is `{ campaignId, name, hypothesis, variants }` with
+2..10 variants; each variant names a `sequenceId` (and optionally a
+`templateId`) that must exist in the workspace, and the cross-entry rules —
+unique names, exactly one `isControl`, weights summing to exactly 100 — are
+checked in `validateAbTestSemantics` (`src/lib/abtest.ts`), which is where
+they belong: a field validator that sees one entry at a time cannot see them.
+
+The assignment happens at enrollment, and it is deterministic:
+`assignVariant` hashes `sha256(abTestId : contactId)` and walks the variants'
+cumulative weights. Not a draw — a draw would let a retried enroll hop arms and
+contaminate the cohort, and the hash is salted with the test id so the same
+contact lands independently in different tests. The distribution is pinned to
+measured values in `tests/unit/abtest.test.ts` (exact per-arm counts over 2000
+synthetic contact ids), not to "roughly 50/50".
+
+When a RUNNING test covers the campaign, the enrollment takes the **arm's**
+sequence instead of the one the request named, and records `abVariantId` on the
+row — which is what makes attribution's `byVariant` table real rather than
+honestly empty. An arm whose sequence was deleted or emptied since the test was
+created answers `409` with the arm's name: pausing the test is the fix, silently
+enrolling everyone into the fallback arm is not.
 
 ## Webhooks (outbound)
 

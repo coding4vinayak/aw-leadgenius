@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withAuth, authedWorkspaceId } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { processSequenceStep } from "@/lib/sequence-engine";
+import { assignVariant } from "@/lib/abtest";
 import { validateBody } from "@/lib/validate";
 import { ENROLLMENT_CREATE } from "@/lib/fields";
 
@@ -52,15 +53,50 @@ async function POST_impl(request: Request) {
     return NextResponse.json({ error: "campaignId required: this sequence is not linked to any campaign" }, { status: 400 });
   }
 
+  // A/B: a RUNNING test on the campaign decides the arm, and the arm decides
+  // the sequence — that override is the entire product of an A/B test (two
+  // copies of the outreach, one number telling them apart). The assignment is
+  // deterministic per (test, contact), so a retried enroll cannot move a
+  // contact between arms and contaminate the comparison. An arm whose
+  // sequence is gone or empty is a loud 409: enrolling such an arm into the
+  // *requested* sequence would quietly put a non-comparable contact in the
+  // control cohort.
+  let armSequenceId = sequenceId;
+  let abVariantId: string | undefined;
+  const test = await prisma.aBTest.findFirst({
+    where: { campaignId, workspaceId, status: "RUNNING" },
+    orderBy: { startedAt: "asc" },
+    include: { variants: { orderBy: { name: "asc" } } },
+  });
+  if (test && test.variants.length >= 2) {
+    const chosen = assignVariant(test.id, contactId, test.variants);
+    if (chosen) {
+      abVariantId = chosen.id;
+      if (chosen.sequenceId !== sequenceId) {
+        const armSequence = await prisma.sequence.findFirst({
+          where: { id: chosen.sequenceId, workspaceId },
+          include: { steps: true },
+        });
+        if (!armSequence) {
+          return NextResponse.json({ error: `arm "${chosen.name}" points at a sequence that no longer exists — pause the test before enrolling` }, { status: 409 });
+        }
+        if (armSequence.steps.length === 0) {
+          return NextResponse.json({ error: `arm "${chosen.name}" points at a sequence with no steps` }, { status: 409 });
+        }
+        armSequenceId = chosen.sequenceId;
+      }
+    }
+  }
+
   const existing = await prisma.enrollment.findFirst({
-    where: { contactId, sequenceId, status: "ACTIVE" },
+    where: { contactId, sequenceId: armSequenceId, status: "ACTIVE" },
   });
   if (existing) {
     return NextResponse.json({ error: "contact is already actively enrolled in this sequence", enrollmentId: existing.id }, { status: 409 });
   }
 
   const enrollment = await prisma.enrollment.create({
-    data: { campaignId, sequenceId, contactId, status: "ACTIVE", currentStep: 0 },
+    data: { campaignId, sequenceId: armSequenceId, contactId, status: "ACTIVE", currentStep: 0, ...(abVariantId ? { abVariantId } : {}) },
   });
 
   let warning: string | undefined;
@@ -72,7 +108,7 @@ async function POST_impl(request: Request) {
 
   const full = await prisma.enrollment.findUnique({
     where: { id: enrollment.id },
-    include: { contact: true, sequence: true, campaign: true },
+    include: { contact: true, sequence: true, campaign: true, abVariant: { select: { name: true, isControl: true } } },
   });
   return NextResponse.json({ enrollment: full, ...(warning ? { warning } : {}) }, { status: 201 });
 }
