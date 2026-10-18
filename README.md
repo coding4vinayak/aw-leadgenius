@@ -186,6 +186,8 @@ GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attrib
 POST   /api/abtests                        # create a running A/B test (2..10
                                            # variants, one control, weights sum
                                            # 100); the next enroll assigns arms
+PATCH  /api/abtests/{id}                   # pause, resume, or complete (with a
+                                           # named winner); COMPLETED is terminal
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -266,6 +268,15 @@ the step's. An arm template deleted mid-test **refuses the send by name**
 instead of falling back to the step's copy: a fallback would hand the arm the
 control's message and silently convert its cohort, so the test would compare a
 message nobody was sent.
+
+`PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
+RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
+only RUNNING tests, and enrollments made while paused join no cohort (that is
+the point of pausing). COMPLETED is terminal and names the winner: it must be
+one of the test's own variant names, `completedAt` is stamped, and re-opening
+is refused with 409 — the cohorts are what the verdict was decided on.
+`DRAFT` is the column's default but not a transition target: nothing reads it,
+nothing wrote it, and "return to before the test existed" is not a lifecycle.
 
 ## Webhooks (outbound)
 

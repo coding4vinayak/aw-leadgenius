@@ -1,5 +1,6 @@
 import type { Schema } from "./validate";
 import {
+  ABTEST_STATUSES,
   CAMPAIGN_STATUSES,
   CONTACT_STATUSES,
   ENROLLMENT_STATUSES,
@@ -180,6 +181,17 @@ export const ABTEST_VARIANT = {
   isControl: { kind: "bool", required: true },
   sequenceId: { kind: "text", required: true, max: 32 },
   templateId: { kind: "text", max: 32 },
+} satisfies Schema;
+
+/**
+ * `PATCH /api/abtests/:id`. `winningVariant` is a name, not an id — the route
+ * checks it against the test's own variant rows — and `DRAFT` is in the
+ * column's domain but is refused as a transition target: no route ever wrote
+ * it, and "go back to before it existed" is not a lifecycle step.
+ */
+export const ABTEST_PATCH = {
+  status: { kind: "enum", required: true, values: ABTEST_STATUSES },
+  winningVariant: { kind: "text", max: 40 },
 } satisfies Schema;
 
 /**

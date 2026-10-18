@@ -172,3 +172,34 @@ describe("the sequence engine renders the arm's template, not a silent fallback"
     assert.doesNotMatch(engine, /templateId = enrollment\.abVariant\?\.templateId \|\| step\.templateId/);
   });
 });
+
+describe("PATCH /api/abtests/:id keeps the pause the errors promise", () => {
+  const patch = source("../../src/app/api/abtests/[id]/route.ts");
+
+  it("owns the row through the key's workspace, then validates on the declared table", () => {
+    assert.match(patch, /const owned = await prisma\.aBTest\.findUnique\(\{ where: \{ id \}, select: \{ workspaceId: true, status: true \} \}\)/);
+    assert.match(patch, /await assertOwns\(request, owned\.workspaceId\)/);
+    assert.match(patch, /validateBody\(body, ABTEST_PATCH, \{ requireWrite: true \}\)/);
+    assert.match(source("../../src/lib/fields.ts"), /status: \{ kind: "enum", required: true, values: ABTEST_STATUSES \}/);
+  });
+
+  // The transition vocabulary: DRAFT is refused as a target, COMPLETED is
+  // terminal — re-opening would re-bucket new enrollments against a verdict
+  // already cast — and a no-op transition answers the row, not an error.
+  it("refuses DRAFT targets and re-opening a finished test", () => {
+    assert.match(patch, /status must be one of \$\{targets\.join\(", "\)\} — DRAFT is not a transition target/);
+    assert.match(patch, /if \(owned\.status === "COMPLETED"\)/);
+    assert.match(patch, /status: 409|"a COMPLETED test is terminal/);
+    assert.match(patch, /if \(status === owned\.status\)/);
+  });
+
+  it("declares the winner only on completion, only among this test's arms", () => {
+    assert.match(patch, /if \(winningVariant && status !== "COMPLETED"\)/);
+    assert.match(patch, /aBTestVariant\.findFirst\(\{ where: \{ abTestId: id, name: winningVariant \}/);
+    assert.match(patch, /completedAt: new Date\(\), winningVariant: winningVariant \?\? null/);
+  });
+
+  it("the enum is transcribed from the schema comment, like every other one", () => {
+    assert.match(source("../../src/lib/enums.ts"), /ABTEST_STATUSES = \["DRAFT", "RUNNING", "PAUSED", "COMPLETED"\]/);
+  });
+});
