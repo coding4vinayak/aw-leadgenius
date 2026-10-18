@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { assignVariant, validateAbTestSemantics, type AbTestVariantInput } from "../../src/lib/abtest";
+import { assignVariant, validateAbTestSemantics, verdictEvidence, type AbTestVariantInput } from "../../src/lib/abtest";
 
 const source = (path: string) =>
   readFileSync(new URL(path, import.meta.url), "utf8")
@@ -108,6 +108,34 @@ describe("validateAbTestSemantics guards what makes the comparison defined", () 
   });
 });
 
+describe("verdictEvidence is the arithmetic a completion claim rests on", () => {
+  // Known answer: 10/100 vs 5/100 → pooled .075, se sqrt(.075·.925·.02),
+  // z = .05/se ≈ 1.3423. Fixed to four decimals so a silent change to the
+  // formula (unpooled se, swapped sign) fails rather than re-derives.
+  it("is the two-proportion z, to the digit", () => {
+    const z = verdictEvidence({ sent: 100, replied: 10 }, { sent: 100, replied: 5 });
+    assert.ok(z !== null);
+    assert.equal(Math.round(z * 10000) / 10000, 1.3423);
+  });
+
+  it("keeps the sign — a winner that replied LESS gets a negative z", () => {
+    const z = verdictEvidence({ sent: 100, replied: 1 }, { sent: 100, replied: 10 });
+    assert.ok(z !== null && z < 0);
+  });
+
+  it("refuses with null when either arm never sent — a rate over zero is not evidence", () => {
+    assert.equal(verdictEvidence({ sent: 0, replied: 0 }, { sent: 50, replied: 4 }), null);
+    assert.equal(verdictEvidence({ sent: 50, replied: 4 }, { sent: 0, replied: 0 }), null);
+  });
+
+  it("answers 0 when the arms are indistinguishable", () => {
+    // Same rate, nonzero variance:
+    assert.equal(verdictEvidence({ sent: 100, replied: 10 }, { sent: 50, replied: 5 }), 0);
+    // Neither arm replied, pooled variance collapses (the divide-by-zero path):
+    assert.equal(verdictEvidence({ sent: 10, replied: 0 }, { sent: 20, replied: 0 }), 0);
+  });
+});
+
 describe("the routes wire the pieces the unit cannot see", () => {
   const enroll = source("../../src/app/api/enrollments/route.ts");
   const create = source("../../src/app/api/abtests/route.ts");
@@ -177,7 +205,10 @@ describe("PATCH /api/abtests/:id keeps the pause the errors promise", () => {
   const patch = source("../../src/app/api/abtests/[id]/route.ts");
 
   it("owns the row through the key's workspace, then validates on the declared table", () => {
-    assert.match(patch, /const owned = await prisma\.aBTest\.findUnique\(\{ where: \{ id \}, select: \{ workspaceId: true, status: true \} \}\)/);
+    assert.match(
+      patch,
+      /const owned = await prisma\.aBTest\.findUnique\(\{\s*where: \{ id \},\s*select: \{[^}]*startedAt: true,\s*variants: \{ select: \{ id: true, name: true, isControl: true \} \}/,
+    );
     assert.match(patch, /await assertOwns\(request, owned\.workspaceId\)/);
     assert.match(patch, /validateBody\(body, ABTEST_PATCH, \{ requireWrite: true \}\)/);
     assert.match(source("../../src/lib/fields.ts"), /status: \{ kind: "enum", required: true, values: ABTEST_STATUSES \}/);
@@ -195,8 +226,24 @@ describe("PATCH /api/abtests/:id keeps the pause the errors promise", () => {
 
   it("declares the winner only on completion, only among this test's arms", () => {
     assert.match(patch, /if \(winningVariant && status !== "COMPLETED"\)/);
-    assert.match(patch, /aBTestVariant\.findFirst\(\{ where: \{ abTestId: id, name: winningVariant \}/);
+    assert.match(patch, /owned\.variants\.find\(\(v\) => v\.name === winningVariant\)/);
     assert.match(patch, /completedAt: new Date\(\), winningVariant: winningVariant \?\? null/);
+  });
+
+  // The verdict has to carry its evidence: confidence is stamped from the
+  // arm's own Activity rows — scoped by variant id, not by the name-keyed
+  // byVariant rollup that merges cohorts across tests with shared arm names —
+  // and a cohort that never sent refuses the verdict instead of faking one.
+  it("stamps confidence from variant-id-scoped sends, and refuses a verdict with none", () => {
+    assert.match(patch, /import \{ verdictEvidence \} from "@\/lib\/abtest"/);
+    assert.match(patch, /const control = owned\.variants\.find\(\(v\) => v\.isControl\)/);
+    assert.match(patch, /enrollment: \{ abVariantId: variantId \}, type: "SENT"/);
+    assert.match(patch, /enrollment: \{ abVariantId: variantId \}, type: "REPLIED"/);
+    assert.match(patch, /verdictEvidence\(winnerArm, controlArm\)/);
+    assert.match(patch, /if \(z === null\)/);
+    assert.match(patch, /no sends/);
+    assert.match(patch, /status: 409/);
+    assert.match(patch, /confidence !== undefined \? \{ confidence \} : \{\}/);
   });
 
   it("the enum is transcribed from the schema comment, like every other one", () => {

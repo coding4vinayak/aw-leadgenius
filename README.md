@@ -186,8 +186,9 @@ GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attrib
 POST   /api/abtests                        # create a running A/B test (2..10
                                            # variants, one control, weights sum
                                            # 100); the next enroll assigns arms
-PATCH  /api/abtests/{id}                   # pause, resume, or complete (with a
-                                           # named winner); COMPLETED is terminal
+PATCH  /api/abtests/{id}                   # pause, resume, or complete (naming
+                                           # a winner stamps its confidence —
+                                           # two-proportion z; COMPLETED terminal)
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -275,6 +276,13 @@ only RUNNING tests, and enrollments made while paused join no cohort (that is
 the point of pausing). COMPLETED is terminal and names the winner: it must be
 one of the test's own variant names, `completedAt` is stamped, and re-opening
 is refused with 409 — the cohorts are what the verdict was decided on.
+Completing *with* a winner also stamps `confidence`: a two-proportion z on the
+winner's and the control's reply rate, counted live from their Activity rows
+scoped by **variant id** — not the name-keyed `byVariant` rollup, which merges
+cohorts across tests that share arm names. A winner or control that recorded no
+sends is refused with 409: a verdict with no email in either arm is not
+evidence. A negative z is stamped rather than hidden — it means the "winner"
+replied *less* than control on its own numbers.
 `DRAFT` is the column's default but not a transition target: nothing reads it,
 nothing wrote it, and "return to before the test existed" is not a lifecycle.
 

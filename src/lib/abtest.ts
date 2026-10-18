@@ -65,3 +65,34 @@ export function validateAbTestSemantics(
   if (sum !== 100) return { ok: false, error: `variant weights must sum to 100, got ${sum}` };
   return { ok: true, value: { ...test, variants } };
 }
+
+/** What the verdict reads off the Activity fold for one arm. */
+export type ArmEvidence = { sent: number; replied: number };
+
+/**
+ * Two-proportion z on reply rate: `(p_winner - p_control) / se`, the standard
+ * error from the *pooled* proportion.
+ *
+ * The product reason it exists: `ABTest.confidence` is a Float the schema
+ * carries and nothing wrote — a winner with no evidence behind it is the same
+ * accepted-but-ignored column `templateId` was until #114. The sign tells you
+ * which way the data points: a negative z means the "winner" replied *less*
+ * than control on its own numbers, and the route stamps it anyway rather than
+ * hiding it, because refusing to look is how a losing test gets relaunched
+ * until it looks like a win.
+ *
+ * Edge cases are refusals, not numbers: `null` when either arm has no sends
+ * (a rate over zero sends is not evidence, and pooled `se` would divide by
+ * zero anyway); `0` when both arms replied at exactly the same rate or the
+ * pooled variance collapses (identical cohorts — the winner was picked on
+ * nothing, and 0 says so).
+ */
+export function verdictEvidence(winner: ArmEvidence, control: ArmEvidence): number | null {
+  if (winner.sent === 0 || control.sent === 0) return null;
+  const p1 = winner.replied / winner.sent;
+  const p2 = control.replied / control.sent;
+  const pooled = (winner.replied + control.replied) / (winner.sent + control.sent);
+  const se = Math.sqrt(pooled * (1 - pooled) * (1 / winner.sent + 1 / control.sent));
+  if (se === 0) return 0;
+  return (p1 - p2) / se;
+}
