@@ -321,6 +321,18 @@ opened the door to a brand-new enrollment for the same dead address;
 enrollment flip if the queue is unavailable, so a redelivered event replays
 the whole side effect rather than half of it.
 
+WhatsApp gets the same treatment from Twilio's *delivery-status* callbacks,
+which share the inbound-message route and its `MessageSid`: `undelivered` is
+always this channel's bounce, `failed` counts only when the error code names
+the recipient (an invalid number, no WhatsApp account, a blocked message —
+`providerSignalFromDeliveryStatus` keeps the codes that name our sender or the
+carrier's bad day off the contact, and an unseen code defaults to marking
+nobody). Those callbacks used to be matched as messages: their `From` is our
+own sending number, so the contact lookup missed and every delivery failure
+became a silent `200`. A failure now writes the same three rows the email
+bounce writes — `BOUNCED` message and enrollment, stamped contact — under the
+same idempotency and revert rules.
+
 ## Webhooks (outbound)
 
 `POST /api/webhooks` takes `{ workspaceId, url, events }` and answers `201`

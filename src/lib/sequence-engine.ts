@@ -87,6 +87,36 @@ export function statusAfterProviderSignal(contactStatus: string, signal: Provide
   return signal === "BOUNCED" ? "BOUNCED" : "UNSUBSCRIBED";
 }
 
+/**
+ * Twilio `failed` codes that name THE RECIPIENT — an invalid number, no
+ * WhatsApp account, a landline, a message the owner blocked — as opposed to
+ * codes that name our sender (21211, 21408), a carrier's bad day (30005,
+ * 30007 "unknown") or Twilio plumbing. A `failed` whose code does not accuse
+ * the address marks nobody: an upstream code this table has never seen
+ * defaults to NOT killing a contact, because guessing is the wrong bias.
+ */
+const RECIPIENT_NAMED_FAILURE_CODES = new Set([21601, 21602, 21612, 21614, 30004, 30006, 30008]);
+
+/**
+ * The Twilio delivery-status callback's lifecycle reading: which `MessageStatus`
+ * + `ErrorCode` pair is this channel's bounce, and which is silence.
+ *
+ * `undelivered` is Twilio's own word for "the number could not receive it",
+ * so it needs no code. `queued`/`sent`/`delivered`/`reading`/`received` are
+ * not lifecycle events at all — this round does not invent a DELIVERED
+ * activity for them, it stops dropping the FAILURE half on the floor.
+ * `errorCode` arrives form-encoded, i.e. as a string; both spellings count.
+ */
+export function providerSignalFromDeliveryStatus(status: string, errorCode: unknown): ProviderSignal | null {
+  const normalized = status.toLowerCase();
+  if (normalized === "undelivered") return "BOUNCED";
+  if (normalized === "failed") {
+    const code = typeof errorCode === "number" ? errorCode : Number(errorCode);
+    return RECIPIENT_NAMED_FAILURE_CODES.has(code) ? "BOUNCED" : null;
+  }
+  return null;
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,
