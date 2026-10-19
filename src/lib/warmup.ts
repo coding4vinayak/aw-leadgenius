@@ -43,8 +43,9 @@ export function capSpendTodayWhere(accountId: string, now: Date): { sendingAccou
  * One warmup pass — what the nightly per-account scheduler and the route's
  * `?action=warmup` tick. The pass advances the stage and nothing else; the
  * raised cap for the next day (`warmupDailyLimit`) is its whole product.
- * Reputation still gates real sends at selection (`reputation > 50`); a pass
- * is a calendar, not a sender.
+ * Reputation still gates real sends at selection (the `REPUTATION_FLOOR`
+ * comparison in `sequence-engine.ts`, on the score `./reputation` derives from
+ * the ledger); a pass is a calendar, not a sender.
  *
  * Passes used to *write messages*: "just checking in" `SentMessage` rows
  * addressed to the workspace's own contacts, `QUEUED` in a state nothing ever

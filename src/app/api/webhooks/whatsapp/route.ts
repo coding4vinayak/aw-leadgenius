@@ -7,6 +7,7 @@ import { validateBody, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
 import { providerSignalFromDeliveryStatus, engagementActivityFromDeliveryStatus, statusAfterProviderSignal } from "@/lib/sequence-engine";
+import { recomputeAccountReputation } from "@/lib/reputation";
 import { INBOUND_MESSAGE_EVENT } from "@/lib/fields";
 import { triggerWebhooks } from "@/lib/webhooks";
 
@@ -113,6 +114,17 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: error.message }, { status: error.status });
       }
       throw error;
+    }
+    if (signal !== null) {
+      // The relabel just moved a row into the account's rolling bounce window;
+      // the score follows the ledger, now. Non-fatal: an undo above reverted
+      // the row with its own score left correct, and the throttled sweep pass
+      // corrects anything missed here.
+      try {
+        await recomputeAccountReputation(sentMessage.sendingAccountId);
+      } catch (error) {
+        console.warn(`reputation recompute missed for account ${sentMessage.sendingAccountId}:`, error instanceof Error ? error.message : error);
+      }
     }
     return NextResponse.json({ ok: true });
   }

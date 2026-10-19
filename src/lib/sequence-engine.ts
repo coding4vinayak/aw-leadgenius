@@ -2,6 +2,7 @@ import { prisma } from "./db";
 import { queues, enqueue } from "./queue";
 import { triggerWebhooks } from "./webhooks";
 import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
+import { REPUTATION_FLOOR } from "./reputation";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -512,7 +513,13 @@ async function selectSendingAccount(workspaceId: string, channel: string) {
     // only a dispatch `FAILED` gives the day back.
     const cap = warmupDailyLimit(account.dailyLimit, account.warmupEnabled, account.warmupStage);
     const spent = await prisma.sentMessage.count({ where: capSpendTodayWhere(account.id, new Date()) });
-    if (spent < cap && account.reputationScore > 50) {
+    // The floor is a number the ledger can now push an account below:
+    // `reputationScore` is recomputed from the rolling deliverability window
+    // on every event that changes it (see ./reputation). Before this round
+    // nothing ever wrote the column, so this comparison sat against a frozen
+    // 100 and the "reputation floors" the README sells could not refuse
+    // anything.
+    if (spent < cap && account.reputationScore > REPUTATION_FLOOR) {
       return account;
     }
   }

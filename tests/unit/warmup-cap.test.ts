@@ -58,7 +58,10 @@ describe("the sender gate consults the ledger, not the worker's progress", () =>
     assert.doesNotMatch(engine, /health\.dailySent/);
   });
 
-  it("still reads reputation from the account row it already has", () => {
-    assert.match(gate, /account\.reputationScore > 50/);
+  it("still reads reputation from the account row it already has — through the named floor", () => {
+    // #31 wrote this against the bare `50`; #32's stack renamed the number,
+    // and the guard was widened exactly like the import guard above was —
+    // the intent was always "the row's own score, compared to the floor".
+    assert.match(gate, /account\.reputationScore > REPUTATION_FLOOR/);
   });
 });

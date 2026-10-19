@@ -229,7 +229,17 @@ bounce webhook writes: a `BOUNCED` activity, a `BOUNCED` enrollment, a
 token (401), the rate limiter (429) or the day (5xx) accuses nobody: the row
 keeps its failure and nothing else moves. The API host is the operator's
 `LINKEDIN_API_BASE`, never a caller-supplied address — the fleet's egress
-guard refuses a `fetch` whose URL the request can move.
+guard refuses a `fetch` whose URL the request can move. Reputation is now
+a derived number too: `reputationScore` used to be written by no code path
+at all — every account sat at the schema default of 100, and the gate's
+floor could never refuse anything the copy said it would. The score is the
+account's own deliverability rate over a rolling 14-day window (a spam
+complaint counts triple a bounce), recomputed on every event that changes
+the ledger — the send worker's flip, the provider webhooks' relabels — and
+by a throttled pass the minute-sweep carries, so an account the floor has
+gated out can age back in on the calendar with no new sends at all. The
+health panel counts through the same window: its `reputation` and its
+sent/bounced/complained readings come from one ledger, not two.
 
 ## Attribution (read-only)
 

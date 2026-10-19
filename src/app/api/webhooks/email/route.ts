@@ -6,6 +6,7 @@ import { validateItems, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
 import { statusAfterProviderSignal } from "@/lib/sequence-engine";
+import { recomputeAccountReputation } from "@/lib/reputation";
 import { INBOUND_EMAIL_EVENT } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -131,6 +132,18 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: error.message }, { status: error.status });
         }
         throw error;
+      }
+
+      // The provider receipt just changed what the account's ledger says
+      // about it — a bounce or complaint lands in the rolling window the
+      // moment it is relabeled (the undo above reverts the row too, so the
+      // score the next event recomputes from is still the honest one).
+      // Non-fatal: the route's answer describes the event, and the
+      // throttled sweep pass corrects any missed recompute.
+      try {
+        await recomputeAccountReputation(sentMessage.sendingAccountId);
+      } catch (error) {
+        console.warn(`reputation recompute missed for account ${sentMessage.sendingAccountId}:`, error instanceof Error ? error.message : error);
       }
     }
   }

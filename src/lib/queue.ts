@@ -5,6 +5,7 @@ import IORedis from "ioredis";
 import type { CancellationData, TrialNudgeData } from "./billing-jobs";
 import { prisma } from "./db";
 import { recordInboundActivity, activityIdempotencyKey } from "./activities";
+import { recomputeAccountReputation } from "./reputation";
 
 const connection = new IORedis(process.env.REDIS_URL || "redis://localhost:6379", {
   maxRetriesPerRequest: null,
@@ -256,6 +257,17 @@ export async function startWorkers() {
         sentAt: result.success ? new Date() : null,
       },
     });
+
+    // The flip changed the ledger, so the account's rolling deliverability
+    // rate is re-read now (see ./reputation). Wrapped because a job failure
+    // means BullMQ redelivers, and a redelivered send job re-sends the
+    // message — a stale reputation for a few minutes, corrected by the next
+    // event or the throttled sweep pass, is the lesser harm by far.
+    try {
+      await recomputeAccountReputation(msg.sendingAccountId);
+    } catch (error) {
+      console.warn(`reputation recompute missed for account ${msg.sendingAccountId}:`, error instanceof Error ? error.message : error);
+    }
 
     if (!result.success && msg.enrollmentId) {
       // A send-time rejection is the only feedback LinkedIn's API ever gives

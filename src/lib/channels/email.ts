@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { prisma } from "../db";
+import { reputationLedgerWhere, reputationWindowWhere } from "../reputation";
 
 export interface SendResult {
   success: boolean;
@@ -40,22 +41,27 @@ export async function sendEmail(msg: { id: string; subject?: string; body: strin
 }
 
 export async function getEmailAccountHealth(accountId: string): Promise<{ reputation: number; dailySent: number; bounces: number; complaints: number }> {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const [sent, bounced] = await Promise.all([
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "SENT" } }),
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "BOUNCED" } }),
+  // The health panel used to be a third definition of the account's traffic:
+  // `SENT`-only counts over TODAY, `complaints: 0` hardcoded, printed next to
+  // a `reputation` the app had never computed. Now that the score IS the
+  // rolling deliverability rate this window defines, the panel counts
+  // THROUGH it — same 14 days, same NOT-FAILED ledger as the cap — so an
+  // operator reading "8 bounces" beside a score of 30 is looking at one
+  // number's inputs, not a second truth. (`?? 100`, not `|| 100`: a
+  // genuinely-bad account that clamps to 0 must not display as perfect.)
+  const now = new Date();
+  const [sent, bounced, complained] = await Promise.all([
+    prisma.sentMessage.count({ where: reputationLedgerWhere(accountId, now) }),
+    prisma.sentMessage.count({ where: { ...reputationWindowWhere(accountId, now), status: "BOUNCED" } }),
+    prisma.sentMessage.count({ where: { ...reputationWindowWhere(accountId, now), status: "COMPLAINED" } }),
   ]);
 
   const account = await prisma.sendingAccount.findUnique({ where: { id: accountId }, select: { reputationScore: true } });
 
   return {
-    reputation: account?.reputationScore || 100,
+    reputation: account?.reputationScore ?? 100,
     dailySent: sent,
     bounces: bounced,
-    complaints: 0,
+    complaints: complained,
   };
 }
