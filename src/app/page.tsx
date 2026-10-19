@@ -41,7 +41,7 @@ export default function Home() {
           </div>
           <div className="rounded-2xl border p-6 border-gray-200 bg-white shadow-sm">
             <h3 className="font-bold text-gray-900">Warmup that protects domains</h3>
-            <p className="mt-2 text-sm text-gray-600">New senders ramp gradually with nightly warmup passes — reputation scores on every account.</p>
+            <p className="mt-2 text-sm text-gray-600">New senders start at 5 sends/day and step up by 5 each nightly warmup pass, until they reach your daily limit.</p>
           </div>
           <div className="rounded-2xl border p-6 border-gray-200 bg-white shadow-sm">
             <h3 className="font-bold text-gray-900">Guardrails in code, not runbooks</h3>
@@ -78,7 +78,7 @@ export default function Home() {
           <h2 className="text-2xl font-bold">Questions, answered</h2>
           <div className="mt-6 space-y-4">
           <div><p className="font-semibold text-gray-900">Is there a trial?</p><p className="mt-1 text-gray-600">Yes — the live demo workspace has a real campaign, sequence, and contacts. No card required.</p></div>
-          <div><p className="font-semibold text-gray-900">Will this get my domain flagged?</p><p className="mt-1 text-gray-600">The engine enforces deliverability: warmup ramps, reputation floors, daily limits, and auto-pause on bounces.</p></div>
+          <div><p className="font-semibold text-gray-900">Will this get my domain flagged?</p><p className="mt-1 text-gray-600">The engine enforces deliverability: warmup ramps that start new senders at 5 sends/day, reputation floors, daily limits, and auto-pause on bounces.</p></div>
           <div><p className="font-semibold text-gray-900">Can I cancel anytime?</p><p className="mt-1 text-gray-600">Yes. Plans are month-to-month; service runs to the end of your billing period.</p></div>
           <div><p className="font-semibold text-gray-900">Do you offer annual billing?</p><p className="mt-1 text-gray-600">Yes — $290 per user per year, two months free, one invoice.</p></div>
           </div>

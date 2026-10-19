@@ -1,86 +1,45 @@
 import { prisma } from "./db";
 import { queues } from "./queue";
 
+/**
+ * The ramp, as arithmetic: a warming account may send 5 messages on its first
+ * day, 5 more for every nightly pass it has taken, and its own `dailyLimit`
+ * once the ramp is over. `min` because the ramp only ever caps — a workspace
+ * that chose a 30/day limit must not have warmup *raise* it to 100.
+ *
+ * This is the cap the sender gate enforces (`sequence-engine.ts`,
+ * `selectSendingAccount`); nothing sends on a pass's behalf. See `runWarmup`.
+ */
+export const WARMUP_STEP_DAILY_SENDS = 5;
+export const WARMUP_MAX_STAGE = 20;
+
+export function warmupDailyLimit(dailyLimit: number, warmupEnabled: boolean, warmupStage: number): number {
+  if (!warmupEnabled) return dailyLimit;
+  const stage = Math.max(0, Math.floor(warmupStage));
+  if (stage >= WARMUP_MAX_STAGE) return dailyLimit;
+  return Math.min(dailyLimit, (stage + 1) * WARMUP_STEP_DAILY_SENDS);
+}
+
+/**
+ * One warmup pass — what the nightly per-account scheduler and the route's
+ * `?action=warmup` tick. The pass advances the stage and nothing else; the
+ * raised cap for the next day (`warmupDailyLimit`) is its whole product.
+ * Reputation still gates real sends at selection (`reputation > 50`); a pass
+ * is a calendar, not a sender.
+ *
+ * Passes used to *write messages*: "just checking in" `SentMessage` rows
+ * addressed to the workspace's own contacts, `QUEUED` in a state nothing ever
+ * sent — and aimed at the customer's real prospects if anything ever had. A
+ * ramp protects a domain by limiting the customer's real volume; fake traffic
+ * protects nothing, and a row a customer's contact can see protects less.
+ */
 export async function runWarmup(accountId: string): Promise<void> {
   const account = await prisma.sendingAccount.findUnique({ where: { id: accountId } });
   if (!account || !account.warmupEnabled || !account.isActive) return;
+  if (account.warmupStage >= WARMUP_MAX_STAGE) return;
 
-  const health = await getAccountHealth(accountId);
-  if (health.reputation < 30) {
-    console.warn(`Account ${accountId} reputation too low for warmup`);
-    return;
-  }
-
-  const warmupContacts = await getWarmupContacts(account.workspaceId, account.channel);
-  if (warmupContacts.length === 0) return;
-
-  const sentToday = await getSentToday(accountId);
-  const remaining = Math.max(0, account.dailyLimit - sentToday);
-  const warmupLimit = Math.min(account.warmupStage * 5, remaining);
-
-  for (let i = 0; i < warmupLimit; i++) {
-    const contact = warmupContacts[i % warmupContacts.length];
-    await sendWarmupMessage(account, contact);
-  }
-
-  if (account.warmupStage < 20) {
-    await prisma.sendingAccount.update({ where: { id: accountId }, data: { warmupStage: { increment: 1 } } });
-  }
+  await prisma.sendingAccount.update({ where: { id: accountId }, data: { warmupStage: { increment: 1 } } });
 }
-
-async function getAccountHealth(accountId: string) {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const [sent, bounced] = await Promise.all([
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "SENT" } }),
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "BOUNCED" } }),
-  ]);
-
-  const account = await prisma.sendingAccount.findUnique({ where: { id: accountId }, select: { reputationScore: true } });
-  return { reputation: account?.reputationScore || 100, dailySent: sent, bounces: bounced };
-}
-
-async function getWarmupContacts(workspaceId: string, channel: string) {
-  return prisma.contact.findMany({
-    where: { workspaceId, status: "ACTIVE", [channel.toLowerCase()]: { not: null } },
-    take: 50,
-    orderBy: { lastContactAt: "asc" },
-  });
-}
-
-async function getSentToday(accountId: string) {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  return prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today }, status: "SENT" } });
-}
-
-async function sendWarmupMessage(account: any, contact: any) {
-  const templates = {
-    EMAIL: { subject: "Quick question", body: `Hi {{firstName}}, just checking in. - {{senderName}}` },
-    WHATSAPP: { subject: undefined, body: "Hi {{firstName}}, quick question for you." },
-    LINKEDIN: { subject: undefined, body: "Hi {{firstName}}, connecting regarding..." },
-  } as const;
-
-  const template = templates[account.channel as keyof typeof templates] ?? templates.EMAIL;
-  const body = template.body.replace("{{firstName}}", contact.firstName || "there").replace("{{senderName}}", account.name);
-
-  await prisma.sentMessage.create({
-    data: {
-      sendingAccountId: account.id,
-      contactId: contact.id,
-      channel: account.channel,
-      subject: account.channel === "EMAIL" ? template.subject : undefined,
-      body,
-      status: "QUEUED",
-    },
-  });
-}
-
-const WARMUP_POOL = [
-  "partner@warmup.leadgenius.io",
-  "hello@warmup.leadgenius.io",
-  "team@warmup.leadgenius.io",
-];
 
 export async function scheduleWarmup(accountId: string): Promise<string> {
   // A per-account scheduler, keyed by the id, not `add(..., { repeat })`.
