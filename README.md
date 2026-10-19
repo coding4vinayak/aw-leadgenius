@@ -175,6 +175,7 @@ POST   /api/sequences                      # create with steps
 GET    /api/contacts?workspaceId=          # list
 POST   /api/contacts                       # create, optionally into lists
 GET    /api/contacts/{id}                  # detail
+PATCH  /api/contacts/{id}                  # edit fields, set lifecycle status
 POST   /api/contacts/{id}?action=enrich    # enrich on demand
 GET    /api/contact-lists?workspaceId=     # lists
 GET    /api/templates?workspaceId=         # message templates
@@ -182,6 +183,9 @@ GET    /api/sending-accounts?workspaceId=  # channel accounts + health
 POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
+POST   /api/enrollments                    # enroll a contact — only an ACTIVE
+                                           # one; a dead status is a 409 that
+                                           # names it (see *Contact lifecycle*)
 GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attribution
 POST   /api/abtests                        # create a running A/B test (2..10
                                            # variants, one control, weights sum
@@ -288,6 +292,21 @@ evidence. A negative z is stamped rather than hidden — it means the "winner"
 replied *less* than control on its own numbers.
 `DRAFT` is the column's default but not a transition target: nothing reads it,
 nothing wrote it, and "return to before the test existed" is not a lifecycle.
+
+## Contact lifecycle stops outreach
+
+`Contact.status` is `ACTIVE | BOUNCED | UNSUBSCRIBED | DO_NOT_CONTACT`, set
+with `PATCH /api/contacts/{id}` — and it is not decoration.
+`POST /api/enrollments` refuses a contact the workspace marked dead with a 409
+naming the status; that refusal is the "not spam complaints" half of this
+product's sentence. A status can also change *between* two ticks of the
+minute-sweep, so `processSequenceStep` checks it before any trigger gets a step
+scheduled and stops the enrollment through `stopStatusForContact`: bounced
+contact → `BOUNCED` enrollment, unsubscribed contact → `UNSUBSCRIBED` — the
+same rows the provider webhook writes when the real bounce or unsubscribe
+arrives — and `DO_NOT_CONTACT` → `PAUSED`, because completing fires the CRM's
+`sequence.completed` signal and a refusal must not announce itself as a
+finished send. ACTIVE contacts run as before.
 
 ## Webhooks (outbound)
 

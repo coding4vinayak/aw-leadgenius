@@ -44,6 +44,27 @@ export function stepIsDue(nextActionAt: Date | null, now: Date): boolean {
   return nextActionAt === null || nextActionAt.getTime() <= now.getTime();
 }
 
+/**
+ * Which enrollment status stops a sequence whose contact left ACTIVE, or null
+ * to let it run.
+ *
+ * Bounced and unsubscribed map to their identical enrollment statuses — the
+ * same rows the provider webhooks write when the bounce or the unsubscribe
+ * arrives live, so a manually-marked contact stops the sequence the same way
+ * the signal does. `DO_NOT_CONTACT` pauses rather than completes: no status in
+ * the enrollment's vocabulary honestly says "this workspace told us not to
+ * contact this person", and `COMPLETED` would fire the CRM's
+ * `sequence.completed` signal on a refusal.
+ */
+export function stopStatusForContact(contactStatus: string): "BOUNCED" | "UNSUBSCRIBED" | "PAUSED" | null {
+  switch (contactStatus) {
+    case "ACTIVE": return null;
+    case "BOUNCED": return "BOUNCED";
+    case "UNSUBSCRIBED": return "UNSUBSCRIBED";
+    default: return "PAUSED";
+  }
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,
@@ -60,6 +81,16 @@ export async function processSequenceStep(
   });
 
   if (!enrollment || enrollment.status !== "ACTIVE") return;
+
+  // A contact who left ACTIVE mid-flight does not get the next email: the
+  // workspace's lifecycle column is a stop signal, not metadata. The enroll
+  // route refuses at the boundary; this catches the status that changed
+  // between two ticks of the sweep.
+  const stop = stopStatusForContact(enrollment.contact.status);
+  if (stop) {
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { status: stop } });
+    return;
+  }
 
   const steps = enrollment.sequence.steps as unknown as SequenceStepConfig[];
   const currentStep = steps[enrollment.currentStep];
