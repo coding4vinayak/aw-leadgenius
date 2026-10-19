@@ -113,7 +113,10 @@ describe("the transition itself still decides the mail", () => {
   });
 
   it("ignores a status it has already reported", () => {
-    assert.match(body(webhook, "syncAndAnnounce"), /previous\.status === stripeSub\.status\) return;/);
+    // The early return became an if-block when the stale-snapshot watermark
+    // joined it: only a *changed* status is announced, and only for an event
+    // that was actually applied.
+    assert.match(body(webhook, "syncAndAnnounce"), /previous && workspaceId && previous\.status !== stripeSub\.status\) \{/);
   });
 });
 

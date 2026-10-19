@@ -50,11 +50,11 @@ describe("one subscription per workspace", () => {
   });
 
   it("refuses only the statuses that are actually billed", () => {
-    assert.match(checkout, /SUBSCRIPTION_STATUS_ACTIVE as readonly string\[\]\)\.includes\(current\.status\)/);
+    assert.match(checkout, /SUBSCRIPTION_STATUS_OPEN as readonly string\[\]\)\.includes\(current\.status\)/);
     // A cancelled workspace, and one whose first checkout never completed, are
     // precisely the people this page exists for.
     assert.doesNotMatch(checkout, /\[\s*"trialing"/, "the active set is named once, in lib/stripe.ts");
-    assert.match(stripeModule, /export const SUBSCRIPTION_STATUS_ACTIVE = \["trialing", "active", "past_due"\] as const;/);
+    assert.match(stripeModule, /export const SUBSCRIPTION_STATUS_OPEN = \[\.\.\.SUBSCRIPTION_STATUS_ACTIVE, "unpaid"\] as const;/);
   });
 
   it("returns before it can make a customer or a subscription", () => {
