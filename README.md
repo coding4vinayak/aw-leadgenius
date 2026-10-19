@@ -219,6 +219,18 @@ spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
 somewhere*), so a four-step sequence arrives as four emails on four days.
 
+LinkedIn has no feedback loop — no webhook will ever tell us a prospect
+closed their account — so the send-time rejection is the only words this
+channel will ever give, and it is now read as such. A rejection that names
+the recipient (`Contact has no LinkedIn URL`, an unresolvable member URN, an
+API 400/404 that says *recipient*) writes exactly the lifecycle the email
+bounce webhook writes: a `BOUNCED` activity, a `BOUNCED` enrollment, a
+`BOUNCED` contact the enroll guard then refuses. A rejection that names our
+token (401), the rate limiter (429) or the day (5xx) accuses nobody: the row
+keeps its failure and nothing else moves. The API host is the operator's
+`LINKEDIN_API_BASE`, never a caller-supplied address — the fleet's egress
+guard refuses a `fetch` whose URL the request can move.
+
 ## Attribution (read-only)
 
 `GET /api/analytics/{workspaceId}?type=attribution&days=14` answers the question a

@@ -10,7 +10,7 @@ export async function sendLinkedIn(msg: { id: string; body: string; sendingAccou
   const account = await prisma.sendingAccount.findUnique({ where: { id: msg.sendingAccountId } });
   if (!account || !account.isActive) return { success: false, error: "Account not found or inactive" };
 
-  const config = account.config as { accessToken: string; userUrn: string; };
+  const config = account.config as { accessToken: string; userUrn: string };
   const contact = await prisma.contact.findUnique({ where: { id: msg.contactId } });
   if (!contact?.linkedinUrl) return { success: false, error: "Contact has no LinkedIn URL" };
 
@@ -19,8 +19,15 @@ export async function sendLinkedIn(msg: { id: string; body: string; sendingAccou
   const recipientUrn = extractMemberUrn(contact.linkedinUrl);
   if (!recipientUrn) return { success: false, error: "Could not resolve LinkedIn member URN" };
 
+  // The same stand-in principle the SMTP sink gives email, declared the only
+  // way the egress guard allows: `LINKEDIN_API_BASE` is the operator's
+  // infrastructure decision, read from the environment in this file. A base
+  // carried in `config` would be a caller-movable address on the wire — the
+  // egress test exists to refuse exactly that, and refused this design first.
+  const apiBase = process.env.LINKEDIN_API_BASE ?? "https://api.linkedin.com";
+
   try {
-    const response = await fetch("https://api.linkedin.com/v2/messages", {
+    const response = await fetch(`${apiBase}/v2/messages`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${config.accessToken}`,
@@ -35,8 +42,13 @@ export async function sendLinkedIn(msg: { id: string; body: string; sendingAccou
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      return { success: false, error: `LinkedIn API error: ${error}` };
+      // The status belongs in the message: `sendFailureDisposition` reads it
+      // to tell a rejection that names the recipient (400/404 + "recipient")
+      // from one that names our token (401) or the day (429/5xx). The text
+      // alone was "LinkedIn API error: <body>", which made every provider
+      // failure the same shape.
+      const text = await response.text();
+      return { success: false, error: `LinkedIn API error ${response.status}: ${text.slice(0, 300)}` };
     }
 
     const data = await response.json();

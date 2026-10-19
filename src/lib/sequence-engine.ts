@@ -139,6 +139,35 @@ export function engagementActivityFromDeliveryStatus(status: string): "DELIVERED
   return null;
 }
 
+/**
+ * What a send-time rejection means, per channel.
+ *
+ * Email and WhatsApp can be corrected later by a provider webhook — a bounce
+ * that posts back, a delivery status. LinkedIn's messaging API has no feedback
+ * loop: the response to the POST is the only words this channel will ever
+ * give, and until here the worker read them, stamped the row `FAILED`, and
+ * stopped — so a contact with no LinkedIn URL failed every LinkedIn step of
+ * every campaign forever, stayed ACTIVE to the enroll guard, and the sequence
+ * walked on as if the person were reachable.
+ *
+ * Only recipient-named rejections speak. The channel function's own two
+ * deterministic reasons (no address, an address that resolves to no member)
+ * and a provider 400/404 that says the word `recipient`. A 401/403 names our
+ * token, a 429 names the rate limiter, a 5xx names the day — none of them
+ * accuses the person, and an error this table has never seen marks nobody
+ * dead: the same "guessed nothing" discipline `providerSignalFromDeliveryStatus`
+ * ships with. `null` means the row keeps the failure and nothing else moves —
+ * a transient rejection of one message is not a verdict on the contact.
+ */
+export function sendFailureDisposition(channel: string, error: string | null | undefined): ProviderSignal | null {
+  const text = (error ?? "").toLowerCase();
+  if (channel === "LINKEDIN") {
+    if (text === "contact has no linkedin url" || text === "could not resolve linkedin member urn") return "BOUNCED";
+    if (/^linkedin api error (400|404): /u.test(text) && text.includes("recipient")) return "BOUNCED";
+  }
+  return null;
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,

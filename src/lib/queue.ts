@@ -207,7 +207,7 @@ export async function startWorkers() {
   const { sendEmail } = await import("./channels/email");
   const { sendWhatsApp } = await import("./channels/whatsapp");
   const { sendLinkedIn } = await import("./channels/linkedin");
-  const { processSequenceStep } = await import("./sequence-engine");
+  const { processSequenceStep, sendFailureDisposition, statusAfterProviderSignal } = await import("./sequence-engine");
   const { enrichContact } = await import("./enrichment");
   const { deliverWebhook } = await import("./webhooks");
   const { rollupDay } = await import("./analytics");
@@ -256,6 +256,55 @@ export async function startWorkers() {
         sentAt: result.success ? new Date() : null,
       },
     });
+
+    if (!result.success && msg.enrollmentId) {
+      // A send-time rejection is the only feedback LinkedIn's API ever gives
+      // (there is no bounce webhook for it), and `sendFailureDisposition`
+      // reads those words: a recipient-named rejection writes the email
+      // webhook's bounce branch exactly — the #60-keyed Activity, the
+      // enrollment stop, the contact stamped through the operator-first
+      // table, so round 13's enroll guard refuses the next campaign too. A
+      // transient one (401/429/5xx, unseen) says nothing about the person:
+      // the row already carries it and no status moves. No `process-step`
+      // enqueue here on purpose — the enrollment this job could re-drive is
+      // the one it just stopped, and `processSequenceStep` returns on the
+      // first line for a non-ACTIVE enrollment.
+      const disposition = sendFailureDisposition(msg.channel, result.error);
+      if (disposition === "BOUNCED") {
+        const activity = await recordInboundActivity(
+          activityIdempotencyKey({ channel: msg.channel, messageId: msg.id, activityType: "BOUNCED" }),
+          {
+            enrollmentId: msg.enrollmentId,
+            contactId: msg.contactId,
+            type: "BOUNCED",
+            channel: msg.channel,
+            messageId: msg.id,
+            metadata: { source: "send-worker", error: result.error ?? null },
+          },
+        );
+        if (activity) {
+          await prisma.enrollment.update({ where: { id: msg.enrollmentId }, data: { status: "BOUNCED" } });
+          const priorContact = await prisma.contact.findUnique({ where: { id: msg.contactId }, select: { status: true } });
+          const marked = priorContact ? statusAfterProviderSignal(priorContact.status, "BOUNCED") : null;
+          if (priorContact && marked) {
+            await prisma.contact.update({ where: { id: msg.contactId }, data: { status: marked } });
+          }
+          try {
+            await enqueueDailyRollup(msg.enrollmentId, activity.createdAt);
+          } catch (error) {
+            // #65's lesson inverted: here a dead Redis must NOT undo the stop.
+            // A bounce replays on provider redelivery; this job has no
+            // redelivery, and the day's next rollup recomputes the window
+            // anyway. The lifecycle writes are the durable half.
+            if (error instanceof QueueUnavailableError) {
+              console.warn(`BOUNCED rollup not enqueued for message ${msg.id}:`, error.message);
+            } else {
+              throw error;
+            }
+          }
+        }
+      }
+    }
 
     if (result.success && msg.enrollmentId) {
       // The send happened, and this process knows it before any provider
