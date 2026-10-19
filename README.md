@@ -180,7 +180,7 @@ POST   /api/contacts/{id}?action=enrich    # enrich on demand
 GET    /api/contact-lists?workspaceId=     # lists
 GET    /api/templates?workspaceId=         # message templates
 GET    /api/sending-accounts?workspaceId=  # channel accounts + health
-POST   /api/sending-accounts/{id}?action=warmup        # run a warmup pass
+POST   /api/sending-accounts/{id}?action=warmup        # advance the warmup ramp one step
 POST   /api/sending-accounts/{id}?action=schedule-warmup  # nightly warmup
 GET    /api/enrollments/{id}               # one enrollment with its trail
 POST   /api/enrollments                    # enroll a contact — only an ACTIVE
@@ -204,8 +204,10 @@ POST   /api/ai/draft-reply                 # draft a reply; human sends
 ```
 
 Sending accounts carry daily limits and reputation scores; the engine skips
-spent or low-reputation accounts rather than burning a domain. Warmup ramps
-new senders gradually. Bounces and complaints pause the enrollment
+spent or low-reputation accounts rather than burning a domain. Warmup is a
+real send cap, not a countdown: a warming account sends at most 5/day, and
+each nightly pass raises the cap by 5 until the account reaches its own
+daily limit. Bounces and complaints pause the enrollment
 automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it

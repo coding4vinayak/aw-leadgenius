@@ -104,7 +104,7 @@ export default async function Page() {
         <h2 className="mt-12 text-xl font-bold">Questions</h2>
         <div className="mt-4 space-y-4">
           <div><p className="font-semibold text-gray-900">Is there a trial?</p><p className="mt-1 text-gray-600">Yes, two. The live demo workspace is open to anyone, no card. And every paid plan starts with a 14-day free trial — cancel from the billing portal any time before day 14 and you are not charged.</p></div>
-          <div><p className="font-semibold text-gray-900">Will this get my domain flagged?</p><p className="mt-1 text-gray-600">The engine enforces deliverability: warmup ramps, reputation floors, daily limits, and auto-pause on bounces.</p></div>
+          <div><p className="font-semibold text-gray-900">Will this get my domain flagged?</p><p className="mt-1 text-gray-600">The engine enforces deliverability: warmup ramps that start new senders at 5 sends/day, reputation floors, daily limits, and auto-pause on bounces.</p></div>
           <div><p className="font-semibold text-gray-900">Can I cancel anytime?</p><p className="mt-1 text-gray-600">Yes. Plans are month-to-month; service runs to the end of your billing period.</p></div>
           <div><p className="font-semibold text-gray-900">Do you offer annual billing?</p><p className="mt-1 text-gray-600">Yes — $290 per user per year, two months free, one invoice.</p></div>
           <div><p className="font-semibold text-gray-900">Already paying, and want to change something?</p><p className="mt-1 text-gray-600">The billing portal does it — more seats, fewer seats, or the annual plan, which credits what you have already paid. A second checkout would be a second subscription, and Stripe keeps charging the one you have.</p></div>

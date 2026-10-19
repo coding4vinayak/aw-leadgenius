@@ -1,6 +1,7 @@
 import { prisma } from "./db";
 import { queues, enqueue } from "./queue";
 import { triggerWebhooks } from "./webhooks";
+import { warmupDailyLimit } from "./warmup";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -178,7 +179,7 @@ export async function processSequenceStep(
     case "wait":
       return;
     case "send":
-      await executeStep(enrollment, currentStep);
+      await executeStep(enrollment, currentStep, now);
       return;
     case "skip":
       await moveTo(enrollment.id, enrollment.currentStep + 1, now);
@@ -410,7 +411,7 @@ type StepEnrollment = {
   abVariant: { name: string; templateId: string | null } | null;
 };
 
-async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig): Promise<void> {
+async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig, now: Date): Promise<void> {
   // A variant's template overrides the step's for every step of the arm —
   // that is the division of labour the two fields state: `sequenceId` sends a
   // different track, `templateId` sends different copy down the same one.
@@ -434,7 +435,17 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig)
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;
 
   const sendingAccount = await selectSendingAccount(enrollment.campaign.workspaceId, step.channel);
-  if (!sendingAccount) throw new Error(`No active sending account for channel ${step.channel}`);
+  if (!sendingAccount) {
+    // A cap is a wait, not a failure — record it. The sweep only reads rows
+    // with a recorded `nextActionAt` (null means "no scheduled wait"), so a
+    // brand-new enrollment whose first kick found no sender would otherwise
+    // never be retried; with the wait written, the minute sweep picks the
+    // step up the moment the cap allows it. The throw stays: the enroll route
+    // answers its 201 with this reason, and a workspace with no sender at all
+    // still wants the human the message names.
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { nextActionAt: now } });
+    throw new Error(`No active sending account for channel ${step.channel}`);
+  }
 
   const sentMessage = await prisma.sentMessage.create({
     data: {
@@ -465,7 +476,11 @@ async function selectSendingAccount(workspaceId: string, channel: string) {
 
   for (const account of accounts) {
     const health = await getEmailAccountHealth(account.id);
-    if (health.dailySent < account.dailyLimit && health.reputation > 50) {
+    // The warmup ramp is a send cap, not a label: while warmup is on, the
+    // account's limit for the day is `warmupDailyLimit` (stage 0 → 5/day,
+    // +5 per nightly pass, its own dailyLimit once warmed).
+    const cap = warmupDailyLimit(account.dailyLimit, account.warmupEnabled, account.warmupStage);
+    if (health.dailySent < cap && health.reputation > 50) {
       return account;
     }
   }
