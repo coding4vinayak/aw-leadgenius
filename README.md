@@ -331,7 +331,16 @@ nobody). Those callbacks used to be matched as messages: their `From` is our
 own sending number, so the contact lookup missed and every delivery failure
 became a silent `200`. A failure now writes the same three rows the email
 bounce writes — `BOUNCED` message and enrollment, stamped contact — under the
-same idempotency and revert rules.
+same idempotency and revert rules. The same callbacks also carry the funnel
+half: `delivered` writes a `DELIVERED` Activity and `read` (or `reading`) an
+`OPENED`, through the same dispatch, the same `#60` key and the same reverts —
+just without the status flips, because the message got through. Until then a
+WhatsApp step could only ever be *sent*: `hasOpen` and the attribution counters
+key on the Activity row, not the channel, so a follow-up guarded `no_open`
+would nag someone reading their phone two feet away, and no dashboard could
+show a WhatsApp open. `queued` and `sent` still write nothing — they
+corroborate the `SENT` we record ourselves, and the lifecycle table owns
+failures.
 
 ## Webhooks (outbound)
 

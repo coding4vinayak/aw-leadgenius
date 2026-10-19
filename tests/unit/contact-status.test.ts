@@ -13,7 +13,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { stopStatusForContact, statusAfterProviderSignal, providerSignalFromDeliveryStatus } from "../../src/lib/sequence-engine";
+import { stopStatusForContact, statusAfterProviderSignal, providerSignalFromDeliveryStatus, engagementActivityFromDeliveryStatus } from "../../src/lib/sequence-engine";
 
 const source = (path: string) =>
   readFileSync(new URL(path, import.meta.url), "utf8")
@@ -191,15 +191,15 @@ describe("the WhatsApp route branches a delivery-status callback before the inbo
     assert.doesNotMatch(branch, /handleIncomingWhatsApp/);
   });
 
-  it("non-bouncing signals answer 200 before any database read", () => {
-    assert.match(branch, /if \(signal === null\) return NextResponse\.json\(\{ ok: true \}\)/);
-    const earlyReturn = branch.indexOf("if (signal === null)");
+  it("statuses with neither a lifecycle nor a funnel meaning answer 200 before any database read", () => {
+    assert.match(branch, /if \(signal === null && engagement === null\) return NextResponse\.json\(\{ ok: true \}\)/);
+    const earlyReturn = branch.indexOf("if (signal === null && engagement === null)");
     const firstRead = branch.indexOf("prisma.sentMessage.findFirst");
-    assert.ok(earlyReturn < firstRead, "a delivered/sent callback must not touch the database");
+    assert.ok(earlyReturn < firstRead, "a queued/sent callback must not touch the database");
   });
 
   it("writes the same three rows the email webhook writes, under the same guards", () => {
-    assert.match(branch, /type: "BOUNCED",\s*channel: "WHATSAPP"/);
+    assert.match(branch, /type: activityType,\s*channel: "WHATSAPP"/);
     assert.match(branch, /prisma\.enrollment\.update\(\{ where: \{ id: enrollmentId \}, data: \{ status: "BOUNCED" \} \}\)/);
     assert.match(branch, /const marked = priorContact \? statusAfterProviderSignal\(priorContact\.status, signal\) : null/);
     assert.match(branch, /if \(priorContact && marked\)/);
@@ -210,5 +210,71 @@ describe("the WhatsApp route branches a delivery-status callback before the inbo
     const rowGate = branch.indexOf("if (!activity) return");
     const flip = branch.indexOf('data: { status: "BOUNCED" }');
     assert.ok(rowGate < flip, "a redelivered callback must not re-flip anything");
+  });
+});
+
+// #123 — the same callback carries the funnel's facts too, and they were going
+// on the floor with the failures: Twilio posts `delivered` and `read`, the
+// WhatsApp answers to email's open, and the route that now catches the bounce
+// still stopped at the lifecycle table. The app records its own SENT for every
+// channel at send time, so the multichannel fold showed sends that never got
+// picked up — and a follow-up guarded `no_open` nagged people reading their
+// phones, because `hasOpen` counts the Activity row, not the channel, and no
+// WhatsApp OPENED row could ever exist.
+describe("engagementActivityFromDeliveryStatus", () => {
+  it("reads the engagement statuses the provider sends", () => {
+    assert.equal(engagementActivityFromDeliveryStatus("delivered"), "DELIVERED");
+    assert.equal(engagementActivityFromDeliveryStatus("read"), "OPENED");
+    assert.equal(engagementActivityFromDeliveryStatus("reading"), "OPENED");
+    assert.equal(engagementActivityFromDeliveryStatus("Read"), "OPENED");
+  });
+
+  it("leaves the failure half to the lifecycle table and the acknowledgements to silence", () => {
+    // `undelivered`/`failed` are providerSignalFromDeliveryStatus's business;
+    // `queued`/`sent` corroborate a SENT row the app already wrote itself.
+    for (const status of ["queued", "sent", "failed", "undelivered", "accepted", "schedule", "canceled", "whatever-next-month"]) {
+      assert.equal(engagementActivityFromDeliveryStatus(status), null, status);
+    }
+  });
+});
+
+describe("the WhatsApp delivery branch writes the funnel, not only the lifecycle", () => {
+  const hook = source("../../src/app/api/webhooks/whatsapp/route.ts");
+  const branch = hook.slice(
+    hook.indexOf('typeof deliveryStatus === "string"'),
+    hook.indexOf("body.MessageSid === undefined"),
+  );
+
+  it("the two tables share one dispatch", () => {
+    assert.match(branch, /const signal = providerSignalFromDeliveryStatus\(deliveryStatus, body\.ErrorCode\)/);
+    assert.match(branch, /const engagement = engagementActivityFromDeliveryStatus\(deliveryStatus\)/);
+    assert.match(branch, /const activityType = engagement === null \? "BOUNCED" : engagement/);
+  });
+
+  it("only the lifecycle half moves statuses", () => {
+    const flipGuard = branch.indexOf("if (signal !== null)");
+    const firstStatusWrite = branch.indexOf('data: { status: "BOUNCED" }');
+    assert.ok(flipGuard !== -1 && flipGuard < firstStatusWrite, "the flip block must sit inside the signal guard");
+    assert.doesNotMatch(branch, /data: \{ status: "OPENED" \}|data: \{ status: "DELIVERED" \}/);
+  });
+
+  it("engagement rows ride the same #60 gate and undo to just the row", () => {
+    assert.match(branch, /activityIdempotencyKey\(\{ channel: "WHATSAPP", messageId, activityType \}\)/);
+    // The reverts list is initialised before the signal guard and is empty for
+    // engagement: a read receipt flips nothing, so the outage undo is the row
+    // delete alone.
+    const revertsInit = branch.indexOf("const reverts: Array<() => Promise<unknown>> = []");
+    const flipGuard = branch.indexOf("if (signal !== null)");
+    assert.ok(revertsInit < flipGuard, "reverts must be declared outside the signal guard");
+    assert.match(branch, /await undoInboundSideEffect\(activity\.id, reverts\)/);
+  });
+
+  it("the condition the funnel feeds is channel-blind by construction", () => {
+    // hasOpen reads the Activity row, so a WhatsApp OPENED counts against a
+    // no_open step exactly like an email open. Pinning the query here keeps
+    // the claim honest if someone later scopes it by channel.
+    const engine = source("../../src/lib/sequence-engine.ts");
+    assert.match(engine, /async function hasOpen\(enrollmentId: string\)[\s\S]{0,120}type: "OPENED"/);
+    assert.doesNotMatch(engine, /hasOpen[\s\S]{0,120}channel/);
   });
 });

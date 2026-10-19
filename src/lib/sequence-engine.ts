@@ -117,6 +117,26 @@ export function providerSignalFromDeliveryStatus(status: string, errorCode: unkn
   return null;
 }
 
+/**
+ * Which delivery-status values are engagement, and which is silence.
+ *
+ * `delivered` and `read`/`reading` are the provider telling us the person got
+ * the message (and looked at it) — facts the `no_open` step condition and the
+ * attribution fold already know how to use, because `hasOpen` and the counter
+ * walk are keyed on the Activity row, not the channel. Before this, the only
+ * WhatsApp rows in that fold were the self-recorded SENT, so a multichannel
+ * sequence could never show an open — and a follow-up guarded `no_open` would
+ * nag someone reading their phone two feet away. `queued`/`sent` corroborate
+ * the send we already recorded, not an engagement fact; the failure statuses
+ * are `providerSignalFromDeliveryStatus`'s business, never this table's.
+ */
+export function engagementActivityFromDeliveryStatus(status: string): "DELIVERED" | "OPENED" | null {
+  const normalized = status.toLowerCase();
+  if (normalized === "delivered") return "DELIVERED";
+  if (normalized === "read" || normalized === "reading") return "OPENED";
+  return null;
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,
