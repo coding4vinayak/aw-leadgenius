@@ -207,7 +207,13 @@ Sending accounts carry daily limits and reputation scores; the engine skips
 spent or low-reputation accounts rather than burning a domain. Warmup is a
 real send cap, not a countdown: a warming account sends at most 5/day, and
 each nightly pass raises the cap by 5 until the account reaches its own
-daily limit. Bounces and complaints pause the enrollment
+daily limit. The cap counts what the day committed, not what the worker has
+finished reporting: a row is spent the moment it is created — while it sits
+`QUEUED` with its send job in flight, and after a provider receipt relabels
+it `BOUNCED` or `COMPLAINED` — because a bounce that freed capacity for the
+next email would reward exactly the traffic the ramp exists to throttle. Only
+a dispatch `FAILED`, where nothing left the account, gives the day back.
+Bounces and complaints pause the enrollment
 automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it

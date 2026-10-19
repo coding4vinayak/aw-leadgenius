@@ -1,7 +1,7 @@
 import { prisma } from "./db";
 import { queues, enqueue } from "./queue";
 import { triggerWebhooks } from "./webhooks";
-import { warmupDailyLimit } from "./warmup";
+import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -475,12 +475,15 @@ async function selectSendingAccount(workspaceId: string, channel: string) {
   });
 
   for (const account of accounts) {
-    const health = await getEmailAccountHealth(account.id);
     // The warmup ramp is a send cap, not a label: while warmup is on, the
     // account's limit for the day is `warmupDailyLimit` (stage 0 → 5/day,
-    // +5 per nightly pass, its own dailyLimit once warmed).
+    // +5 per nightly pass, its own dailyLimit once warmed). The ledger is
+    // `capSpendTodayWhere`: rows the worker has not picked up yet count, and
+    // rows the provider later relabels (a bounce, a complaint) keep counting —
+    // only a dispatch `FAILED` gives the day back.
     const cap = warmupDailyLimit(account.dailyLimit, account.warmupEnabled, account.warmupStage);
-    if (health.dailySent < cap && health.reputation > 50) {
+    const spent = await prisma.sentMessage.count({ where: capSpendTodayWhere(account.id, new Date()) });
+    if (spent < cap && account.reputationScore > 50) {
       return account;
     }
   }
@@ -543,21 +546,4 @@ async function completeEnrollment(enrollment: {
     sequenceId: enrollment.sequenceId,
     completedAt: completedAt.toISOString(),
   });
-}
-
-// Warmup logic
-async function getEmailAccountHealth(accountId: string) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const [sent, bounced] = await Promise.all([
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "SENT" } }),
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "BOUNCED" } }),
-  ]);
-
-  const account = await prisma.sendingAccount.findUnique({ where: { id: accountId }, select: { reputationScore: true } });
-
-  return { reputation: account?.reputationScore || 100, dailySent: sent, bounces: bounced, complaints: 0 };
 }
