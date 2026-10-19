@@ -469,6 +469,31 @@ against the real route with two accounts minted on a copy of the dev db (the liv
 `bull:warmup:repeat` at `zcard 2`, each template carrying its own `accountId`, and
 re-posting one account stayed at 2.
 
+The scheduling got fixed in #57; the job's own body still lied. `runWarmup` wrote
+`SentMessage` rows with `status: "QUEUED"` and stopped — unlike `executeStep`, which
+enqueues the `send-message` job in the same breath as its insert — so every nightly
+warmup tick minted rows claiming a queue that had no sender waiting on them, forever.
+The recipients were real ACTIVE workspace contacts picked by oldest `lastContactAt`:
+warmup was about to mail *your own prospect list* a canned "just checking in" from
+your production sending account, while `WARMUP_POOL` — the three partner addresses
+whose existence is the whole concept of the tool — sat unreferenced in the file (one
+of the repo's standing lint warnings). And the per-channel lookup keyed on
+`[channel.toLowerCase()]`, where `whatsapp` and `linkedin` are not `Contact` fields:
+enabling warmup on those accounts was a 9am Prisma-validation throw. Now
+`warmupPlan` (five per stage, capped by the day's remaining budget — measured against
+rows the send worker *flipped to* `SENT`, so the cap is real) and
+`warmupChannelSupported` are pure and carry the known answers; non-email accounts are
+refused before any write; the recipients are the pool, upserted on the
+`(workspaceId, email)` unique with `source: "warmup"` and `status: "DO_NOT_CONTACT"` —
+which puts round 13's enroll boundary in front of them (a pool address 409s a campaign
+enrollment by name), so warmup addresses can never become campaign contacts and
+prospects can never become warmup targets; and every row is created `QUEUED` only
+because the hand-off to the queue follows it in the same function, with a queue
+outage flipping the row to `FAILED` with the outage's own words and stopping the run.
+Warmup sends spend the account's daily budget and, being `SentMessage` rows with no
+enrollment, never write an `Activity`: the ramp counts against the sending account,
+never into a campaign's attribution.
+
 Five of those six queues then kept every job they finished, forever. Only `analytics`
 bounded itself — since #54, `removeOnComplete`/`removeOnFail: true`, because its fixed
 day id has to free up after a run or the day freezes. The other five added with no
