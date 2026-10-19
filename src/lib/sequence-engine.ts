@@ -11,6 +11,7 @@ export interface SequenceStepConfig {
   conditions?: {
     if?: "no_reply" | "no_open" | "no_click" | "replied" | "bounced" | "clicked";
     then?: "next" | "skip" | "end" | "branch";
+    elseThen?: "next" | "skip" | "end";
     branchToStep?: number;
   };
 }
@@ -252,6 +253,15 @@ export type StepOutcome =
 export const STEP_CONDITIONS = ["no_reply", "no_open", "no_click", "replied", "bounced", "clicked"] as const;
 /** What a satisfied condition does. `next` is the default and the historical behavior. */
 export const STEP_ACTIONS = ["next", "skip", "end", "branch"] as const;
+/**
+ * What an unsatisfied `no_*` condition does instead of waiting. The else has
+ * no `branch`: a second `branchToStep` vocabulary for one more direction is a
+ * bigger surface than the `next`/`skip`/`end` that actually express "send the
+ * step after all", "step past it" and "stop the run".
+ */
+export const STEP_ELSE_ACTIONS = ["next", "skip", "end"] as const;
+/** The conditions the calendar evaluates — the only ones with an else. */
+export const WAIT_CONDITIONS = ["no_reply", "no_open", "no_click"] as const;
 
 export type StepFacts = {
   /** Whether the step's recorded wait has ended (`stepIsDue`). */
@@ -275,6 +285,14 @@ export type StepFacts = {
  * `branch` never branched, and an unknown `if` fell into a `default: return
  * true` that spent the step on the next trigger of any kind. The README sells
  * "branch conditions"; these four actions are that sentence made true.
+ *
+ * `elseThen` is the second half of that sentence. An unsatisfied wait-condition
+ * used to mean `wait` forever: `{if: "no_open", then: "end"}` ended the unread
+ * and PARKED the opened — no follow-up, no advance, the enrollment sitting
+ * ACTIVE with an overdue clock and nothing telling anyone. "Nudge the readers,
+ * end the unread" was inexpressible; now the satisfied branch runs `then`, the
+ * unsatisfied one runs `elseThen` where defined, and the calendar still owns
+ * the moment: only the sweep's `TIME_ELAPSED` consults the else.
  */
 export function stepOutcome(step: SequenceStepConfig, triggerType: SequenceTrigger, facts: StepFacts): StepOutcome {
   if (!step.conditions) {
@@ -294,7 +312,24 @@ export function stepOutcome(step: SequenceStepConfig, triggerType: SequenceTrigg
         throw new Error(`step ${step.stepNumber} has unknown condition "${String(conditions.if)}" (allowed: ${STEP_CONDITIONS.join(", ")})`);
     }
   })();
-  if (!satisfied) return { kind: "wait" };
+  if (!satisfied) {
+    // The else is consulted only on the tick where a wait-condition could have
+    // been satisfied — `TIME_ELAPSED`, the sweep arriving at a due step. An
+    // event trigger consulting it would spend the step ahead of its calendar,
+    // unmaking `delayDays`: a read receipt arriving the evening after the
+    // intro must not send tomorrow's nudge tonight. No `elseThen` means wait,
+    // exactly the behavior every configuration had before this field existed.
+    if (conditions.elseThen !== undefined && triggerType === "TIME_ELAPSED") {
+      switch (conditions.elseThen) {
+        case "next": return { kind: "send" };
+        case "skip": return { kind: "skip" };
+        case "end": return { kind: "end" };
+        default:
+          throw new Error(`step ${step.stepNumber} has unknown elseThen "${String(conditions.elseThen)}" (allowed: ${STEP_ELSE_ACTIONS.join(", ")})`);
+      }
+    }
+    return { kind: "wait" };
+  }
 
   switch (conditions.then ?? "next") {
     case "next": return { kind: "send" };
@@ -326,12 +361,23 @@ export function conditionProblem(
   if (conditions === undefined || conditions === null) return null;
   if (typeof conditions !== "object" || Array.isArray(conditions)) return "conditions must be an object";
 
-  const { if: condition, then: action, branchToStep } = conditions as Record<string, unknown>;
+  const { if: condition, then: action, elseThen: elseAction, branchToStep } = conditions as Record<string, unknown>;
   if (typeof condition !== "string" || !(STEP_CONDITIONS as readonly string[]).includes(condition)) {
     return `conditions.if must be one of ${STEP_CONDITIONS.join(", ")}`;
   }
   if (action !== undefined && (typeof action !== "string" || !(STEP_ACTIONS as readonly string[]).includes(action))) {
     return `conditions.then must be one of ${STEP_ACTIONS.join(", ")}`;
+  }
+  if (elseAction !== undefined) {
+    if (typeof elseAction !== "string" || !(STEP_ELSE_ACTIONS as readonly string[]).includes(elseAction)) {
+      return `conditions.elseThen must be one of ${STEP_ELSE_ACTIONS.join(", ")}`;
+    }
+    // The else of `replied`/`bounced`/`clicked` would be "this event did not
+    // just happen", which is true of every other trigger and fires the step on
+    // the first one. Only the calendar-evaluated conditions have an else.
+    if (!(WAIT_CONDITIONS as readonly string[]).includes(condition)) {
+      return `conditions.elseThen only applies to the wait conditions (${WAIT_CONDITIONS.join(", ")}); an event condition has no else worth running`;
+    }
   }
   if (branchToStep !== undefined || action === "branch") {
     if (action !== "branch") return 'conditions.branchToStep only applies when conditions.then is "branch"';

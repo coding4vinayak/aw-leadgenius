@@ -585,3 +585,40 @@ spent a due enrollment on its own after 3s. On that same copy the shipped data r
 enrollments sitting on an ended wait, 0 steps with conditions and 0 `SendingAccount` rows — which
 is why this went unnoticed: nothing configured in the dev workspace could show it, while every
 real campaign's second email was silently never sent.
+
+## A condition decides both ways
+
+`conditions` on a sequence step is the product's "branch conditions" sentence,
+and round #23 made the satisfied half true. This round is the other half,
+found by *using* the first one: `{if: "no_open", then: "end"}` finally ended
+the unread — and parked the opened. `stepOutcome` answered an unsatisfied
+condition with `wait`, and for a wait-condition that tick never comes again:
+the sweep re-reads the same overdue row every minute and declines it forever,
+silently, ACTIVE, with no next action and nothing to tell anyone. "Nudge the
+readers, end the unread" — the plainest sentence in sales engagement — was
+inexpressible.
+
+`conditions.elseThen` is that sentence. The satisfied branch runs `then` as
+before; the unsatisfied one runs `elseThen` where defined, and two disciplines
+keep it honest. Only the sweep's `TIME_ELAPSED` tick consults the else: an
+event trigger firing it would spend the step ahead of its calendar — a read
+receipt at 8pm must not send tomorrow's nudge tonight, which is the same
+`delayDays` promise the sweep was built to keep. And `elseThen` is accepted
+only on the wait conditions (`no_reply`, `no_open`, `no_click`): the else of
+`replied` is "this event did not just happen", true of every other trigger, so
+an event-condition else would fire the step on the first unrelated callback.
+The else menu is `next`/`skip`/`end` with no `branch` — a second
+`branchToStep` vocabulary is a bigger surface than the direction it would
+serve. `conditionProblem` (the write-time twin, 400 at create) refuses
+off-menu actions and event-condition elses by naming the sets; `stepOutcome`
+throws again at run time, because rows outlive the request that validated
+them. No `elseThen` is exactly the old behavior, so every stored sequence keeps
+what its author configured — the guard is in the known answers: `{if:
+"no_open", then: "end"}` with `opened` still waits.
+
+Live, the two halves become a control pair: two contacts, one
+`{if: "no_open", then: "end", elseThen: "next"}` step, one rewound clock, and
+the only difference is a signed WhatsApp `read` from the previous round's
+callback — the reader gets the nudge, the unread's run ends, and both
+decisions were made by the same line of the same pure function on the same
+tick.

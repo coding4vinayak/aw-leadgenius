@@ -90,6 +90,77 @@ describe("stepOutcome", () => {
   });
 });
 
+// #124 — the else. An unsatisfied wait-condition used to mean WAIT FOREVER:
+// `{if: "no_open", then: "end"}` ended the unread and PARKED the opened —
+// ACTIVE, overdue, silent, no follow-up and no signal to anyone. "Nudge the
+// readers, end the unread" was inexpressible on a product page that sells
+// branch conditions. `elseThen` is the other half of the sentence, with two
+// disciplines: only the sweep's TIME_ELAPSED tick consults it (an event
+// receipt must not spend the step ahead of its calendar — a read at 8pm must
+// not send tomorrow's nudge tonight), and no `elseThen` is exactly the old
+// behavior, so every stored row keeps the sequence its author configured.
+describe("elseThen (#124)", () => {
+  it("runs the else on the calendar tick when the condition fails — and never over the satisfied branch", () => {
+    const s = step(2, { if: "no_open", then: "end", elseThen: "next" });
+    assert.deepEqual(stepOutcome(s, "TIME_ELAPSED", facts({ opened: true })), { kind: "send" });
+    assert.deepEqual(stepOutcome(s, "TIME_ELAPSED", facts()), { kind: "end" });
+  });
+
+  it("skip and end are as available to the else as to the then", () => {
+    assert.deepEqual(
+      stepOutcome(step(2, { if: "no_reply", then: "next", elseThen: "skip" }), "TIME_ELAPSED", facts({ replied: true })),
+      { kind: "skip" },
+    );
+    assert.deepEqual(
+      stepOutcome(step(2, { if: "no_click", then: "next", elseThen: "end" }), "TIME_ELAPSED", facts({ clicked: true })),
+      { kind: "end" },
+    );
+  });
+
+  it("an event trigger never consults the else — the calendar owns the moment", () => {
+    const s = step(2, { if: "no_open", then: "end", elseThen: "next" });
+    assert.deepEqual(stepOutcome(s, "OPENED", facts({ opened: true })), { kind: "wait" });
+    assert.deepEqual(stepOutcome(s, "DELIVERED", facts()), { kind: "wait" });
+  });
+
+  it("no elseThen means wait — the pre-#124 behavior, unchanged for every stored row", () => {
+    const s = step(2, { if: "no_open", then: "end" });
+    assert.deepEqual(stepOutcome(s, "TIME_ELAPSED", facts({ opened: true })), { kind: "wait" });
+  });
+
+  it("refuses an unknown elseThen at run time by naming the menu — rows outlive their validation", () => {
+    assert.throws(
+      () => stepOutcome(step(2, { if: "no_reply", then: "end", elseThen: "weird" as never }), "TIME_ELAPSED", facts({ replied: true })),
+      /unknown elseThen "weird" \(allowed: next, skip, end\)/,
+    );
+  });
+
+  it("conditionProblem accepts the else the engine can run", () => {
+    const numbers = [1, 2, 3];
+    assert.equal(conditionProblem({ stepNumber: 2, conditions: { if: "no_open", then: "end", elseThen: "next" } }, numbers), null);
+    assert.equal(conditionProblem({ stepNumber: 2, conditions: { if: "no_reply", elseThen: "skip" } }, numbers), null);
+  });
+
+  it("refuses an else with no moment: an event condition has no else worth running", () => {
+    assert.match(
+      conditionProblem({ stepNumber: 2, conditions: { if: "replied", elseThen: "next" } }, [1, 2, 3])!,
+      /elseThen only applies to the wait conditions \(no_reply, no_open, no_click\)/,
+    );
+  });
+
+  it("refuses else actions outside the menu — no branch, because a second branchToStep vocabulary is not this round", () => {
+    const numbers = [1, 2, 3];
+    assert.match(
+      conditionProblem({ stepNumber: 2, conditions: { if: "no_open", elseThen: "branch", branchToStep: 3 } }, numbers)!,
+      /conditions\.elseThen must be one of next, skip, end/,
+    );
+    assert.match(
+      conditionProblem({ stepNumber: 2, conditions: { if: "no_open", elseThen: "weird" } }, numbers)!,
+      /elseThen must be one of next, skip, end/,
+    );
+  });
+});
+
 describe("conditionProblem (the write-time twin)", () => {
   const numbers = [1, 2, 3];
 
