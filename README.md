@@ -308,6 +308,19 @@ arrives — and `DO_NOT_CONTACT` → `PAUSED`, because completing fires the CRM'
 `sequence.completed` signal and a refusal must not announce itself as a
 finished send. ACTIVE contacts run as before.
 
+The other direction is true too: the provider signals *write* that column, so
+the sentence above is a fact rather than an analogy. A webhook `bounce`,
+`spamreport` or `unsubscribe` stamps the contact through
+`statusAfterProviderSignal` — bounce → `BOUNCED`, complaint or unsubscribe →
+`UNSUBSCRIBED` — and marks only an `ACTIVE` contact, so an operator's
+`DO_NOT_CONTACT` is never erased by a provider event and a second signal on an
+already-marked address changes nothing. Before this, a webhook bounce flipped
+the enrollment but left the contact `ACTIVE`, and the guard above happily
+opened the door to a brand-new enrollment for the same dead address;
+`unsubscribe` flipped nothing at all. The stamp reverts with the
+enrollment flip if the queue is unavailable, so a redelivered event replays
+the whole side effect rather than half of it.
+
 ## Webhooks (outbound)
 
 `POST /api/webhooks` takes `{ workspaceId, url, events }` and answers `201`

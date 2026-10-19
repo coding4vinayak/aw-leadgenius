@@ -13,7 +13,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { stopStatusForContact } from "../../src/lib/sequence-engine";
+import { stopStatusForContact, statusAfterProviderSignal } from "../../src/lib/sequence-engine";
 
 const source = (path: string) =>
   readFileSync(new URL(path, import.meta.url), "utf8")
@@ -71,5 +71,58 @@ describe("the engine stops a mid-sequence contact whose status changed", () => {
     // REPLIED or SENT event send the next step to a DO_NOT_CONTACT contact.
     assert.match(engine, /export async function processSequenceStep/);
     assert.doesNotMatch(source("../../src/lib/scheduler.ts"), /stopStatusForContact/);
+  });
+});
+
+// #121 — the writer side of the same column. The email webhook flipped the
+// enrollment on BOUNCED/COMPLAINED and the contact stayed ACTIVE forever, so
+// the round-13 guard opened the door again for the next enrollment; and an
+// `unsubscribe` event — the one signal the recipient themselves sent — flipped
+// nothing at all. The stamp must also never overwrite the operator's stronger
+// mark, so the decision is a pure table and the route only applies it.
+describe("statusAfterProviderSignal", () => {
+  it("marks an ACTIVE contact from each signal", () => {
+    assert.equal(statusAfterProviderSignal("ACTIVE", "BOUNCED"), "BOUNCED");
+    assert.equal(statusAfterProviderSignal("ACTIVE", "UNSUBSCRIBED"), "UNSUBSCRIBED");
+    // A spam complaint is the recipient's strongest unsubscribe action; the
+    // enrollment branch already treats it as one, so the contact agrees.
+    assert.equal(statusAfterProviderSignal("ACTIVE", "COMPLAINED"), "UNSUBSCRIBED");
+  });
+
+  it("never overwrites a status that is already not ACTIVE", () => {
+    // DO_NOT_CONTACT is an operator decision and outranks a provider event;
+    // an already-marked address gains nothing from a second signal.
+    for (const marked of ["BOUNCED", "UNSUBSCRIBED", "DO_NOT_CONTACT"]) {
+      for (const signal of ["BOUNCED", "COMPLAINED", "UNSUBSCRIBED"] as const) {
+        assert.equal(statusAfterProviderSignal(marked, signal), null, `${marked} + ${signal}`);
+      }
+    }
+  });
+});
+
+describe("the email webhook stamps the contact, not only the enrollment", () => {
+  const hook = source("../../src/app/api/webhooks/email/route.ts");
+
+  it("the unsubscribe event joins the flip branch the bounce and complaint live in", () => {
+    assert.match(hook, /activityType === "BOUNCED" \|\| activityType === "COMPLAINED" \|\| activityType === "UNSUBSCRIBED"/);
+  });
+
+  it("consults the pure table and writes the contact only when it says to", () => {
+    assert.match(hook, /statusAfterProviderSignal\(priorContact\.status, activityType\)/);
+    assert.match(hook, /if \(priorContact && marked\)[\s\S]{0,200}prisma\.contact\.update/);
+    // The mark comes from the table, not from a status the route invented.
+    assert.doesNotMatch(hook, /prisma\.contact\.update[\s\S]{0,80}status: "BOUNCED"/);
+  });
+
+  it("the contact stamp carries a #65 revert, in the same reverts list", () => {
+    assert.match(hook, /reverts\.push\(\(\) => prisma\.contact\.update\([\s\S]{0,120}status: back/);
+    const flip = hook.indexOf('activityType === "UNSUBSCRIBED"');
+    const stamp = hook.indexOf("statusAfterProviderSignal(priorContact.status");
+    const enqueueTry = hook.indexOf("await enqueue(queues.sequence");
+    assert.ok(flip < stamp && stamp < enqueueTry, "stamp must run inside the flip branch, before the enqueue that can revert it");
+  });
+
+  it("the flip decision is typed, so no route can feed the table a stray string", () => {
+    assert.match(hook, /function mapEmailEvent\(event: string\): EmailActivityType \| null/);
   });
 });

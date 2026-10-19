@@ -101,6 +101,6 @@ describe("email route — status reverts are captured BEFORE the writes", () => 
     // "empty array + row-delete", which is what the undo does for anything that
     // does not touch a status.
     assert.match(EMAIL, /const reverts:\s*Array<\(\)\s*=>\s*Promise<unknown>>\s*=\s*\[\s*\]/);
-    assert.match(EMAIL, /if\s*\(\s*activityType === "BOUNCED" \|\| activityType === "COMPLAINED"\s*\)/);
+    assert.match(EMAIL, /if\s*\(\s*activityType === "BOUNCED" \|\| activityType === "COMPLAINED"( \|\|\s*activityType === "UNSUBSCRIBED")?\s*\)/);
   });
 });

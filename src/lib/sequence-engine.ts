@@ -65,6 +65,28 @@ export function stopStatusForContact(contactStatus: string): "BOUNCED" | "UNSUBS
   }
 }
 
+/** The provider signals that mean the address itself is dead to outreach. */
+export type ProviderSignal = "BOUNCED" | "COMPLAINED" | "UNSUBSCRIBED";
+
+/**
+ * What to stamp the contact as when a provider signal arrives, or null to
+ * leave the contact alone.
+ *
+ * Only an ACTIVE contact gets marked: a bounce for an address the operator
+ * already moved to `DO_NOT_CONTACT` must not erase the stronger mark, and a
+ * second signal on an already-marked address adds no information. The email
+ * webhook used to flip the enrollment and leave the contact `ACTIVE` — which
+ * meant the round-13 guard let the same dead address start a brand-new
+ * sequence one click later, and the `unsubscribe` event flipped nothing at
+ * all. This table is what makes `stopStatusForContact`'s claim — that a
+ * manually-marked contact stops the sequence "the same way the signal does" —
+ * literally true, because the signal now writes the same column.
+ */
+export function statusAfterProviderSignal(contactStatus: string, signal: ProviderSignal): "BOUNCED" | "UNSUBSCRIBED" | null {
+  if (contactStatus !== "ACTIVE") return null;
+  return signal === "BOUNCED" ? "BOUNCED" : "UNSUBSCRIBED";
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,

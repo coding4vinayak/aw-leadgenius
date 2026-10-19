@@ -5,6 +5,7 @@ import { verifyInboundWebhook } from "@/lib/inbound-webhooks";
 import { validateItems, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
+import { statusAfterProviderSignal } from "@/lib/sequence-engine";
 import { INBOUND_EMAIL_EVENT } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -80,13 +81,13 @@ export async function POST(request: Request) {
       // aggregateAnalytics windows on createdAt, not on the provider's timestamp.
       await enqueueDailyRollup(sentMessage.enrollmentId, activity.createdAt);
 
-      // #65. Pre-images captured before any write in the BOUNCED/COMPLAINED
-      // branch, so the catch has something to revert to. OPENED and CLICKED
-      // never flip a status, so they carry no reverts and the undo only
-      // deletes the Activity row for them.
+      // #65. Pre-images captured before any write in the flip branch, so the
+      // catch has something to revert to. OPENED and CLICKED never flip a
+      // status, so they carry no reverts and the undo only deletes the Activity
+      // row for them.
       const reverts: Array<() => Promise<unknown>> = [];
 
-      if (activityType === "BOUNCED" || activityType === "COMPLAINED") {
+      if (activityType === "BOUNCED" || activityType === "COMPLAINED" || activityType === "UNSUBSCRIBED") {
         const enrollmentId = sentMessage.enrollmentId;
         const priorEnrollment = await prisma.enrollment.findUnique({
           where: { id: enrollmentId },
@@ -103,6 +104,21 @@ export async function POST(request: Request) {
           reverts.push(() => prisma.enrollment.update({ where: { id: enrollmentId }, data: { status: back } }));
         }
         reverts.push(() => prisma.sentMessage.update({ where: { id: sentMessage.id }, data: { status: priorSentMessageStatus } }));
+
+        // The enrollment stop is transient bookkeeping; the contact column is
+        // the durable one the enroll route and the engine guard read. Without
+        // this stamp a bounced address stayed ACTIVE forever and a fresh
+        // enrollment for it passed both round-13 doors.
+        const priorContact = await prisma.contact.findUnique({
+          where: { id: sentMessage.contactId },
+          select: { status: true },
+        });
+        const marked = priorContact ? statusAfterProviderSignal(priorContact.status, activityType) : null;
+        if (priorContact && marked) {
+          const back = priorContact.status;
+          await prisma.contact.update({ where: { id: sentMessage.contactId }, data: { status: marked } });
+          reverts.push(() => prisma.contact.update({ where: { id: sentMessage.contactId }, data: { status: back } }));
+        }
       }
 
       try {
@@ -207,8 +223,11 @@ function describe(value: unknown): string {
   return `a ${typeof value}`;
 }
 
-function mapEmailEvent(event: string): string | null {
-  const map: Record<string, string> = {
+/** Every Activity.type this provider can produce. */
+type EmailActivityType = "DELIVERED" | "OPENED" | "CLICKED" | "BOUNCED" | "COMPLAINED" | "UNSUBSCRIBED" | "FAILED" | "SENT";
+
+function mapEmailEvent(event: string): EmailActivityType | null {
+  const map: Record<string, EmailActivityType> = {
     delivered: "DELIVERED",
     open: "OPENED",
     click: "CLICKED",
