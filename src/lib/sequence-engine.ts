@@ -6,6 +6,7 @@ import { REPUTATION_FLOOR } from "./reputation";
 import { MERGEABLE_COLUMNS } from "./template-vars";
 import { effectiveTemplateId } from "./merge-promise";
 import { isChannelMismatch, stepChannelProblem } from "./channel-fit";
+import { sendSubjectProblem } from "./subject-fit";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -480,6 +481,18 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
   // real message over a reporting label would trade a wrong number for no number.
   if (template && isChannelMismatch(step, template)) {
     throw new Error(stepChannelProblem(step, template));
+  }
+  // The pair can agree and still be the second half of #25's own sentence: an
+  // EMAIL step on an EMAIL template whose `subject` column is empty. `sendEmail`
+  // sends `msg.subject || "New message"`, so the prospect reads a subject nobody
+  // wrote, which is why the doors now refuse such a row (#26) — and why the send
+  // refuses it too, for the templates written before the rule. Only the email
+  // half is asked here: a chat template that carries a subject holds the author's
+  // dead copy, and refusing a message that would arrive complete in order to
+  // complain about a column no carrier reads is the wrong trade.
+  if (template) {
+    const subjectGap = sendSubjectProblem(step, template);
+    if (subjectGap) throw new Error(subjectGap);
   }
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;

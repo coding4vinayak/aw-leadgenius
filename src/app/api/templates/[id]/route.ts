@@ -6,6 +6,7 @@ import { TEMPLATE_PATCH } from "@/lib/fields";
 import { templateInUseMessage } from "@/lib/templates";
 import { normalizeVariableDeclaration, checkTemplateVariables } from "@/lib/template-vars";
 import { strandedByChannel } from "@/lib/channel-fit";
+import { subjectProblem } from "@/lib/subject-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   // caller named overrides it. `variables: []` says "no promise" — the column
   // goes empty and the rules go silent, exactly as for a template that was
   // written before they had a reader.
-  const hasOwn = (key: "body" | "subject" | "variables") => key in input.data;
+  const hasOwn = (key: "body" | "subject" | "variables" | "channel") => key in input.data;
   if (hasOwn("variables") || hasOwn("body") || hasOwn("subject")) {
     const merged = {
       body: hasOwn("body") ? (input.data.body as string) : _owned.body,
@@ -65,6 +66,25 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   if (input.data.channel !== undefined && input.data.channel !== _owned.channel) {
     const stranded = await strandedByChannel(id, _owned.name, input.data.channel);
     if (stranded.length) return fieldProblem("channel", stranded.join("; "));
+  }
+
+  // The row's own two columns are then judged against each other, with the same
+  // overlay: `channel` decides whether `subject` is mandatory or meaningless, and
+  // only a patch that names one of the two can change the answer. Patching the
+  // `name` or the `body` of a template this rule would refuse is not asked to
+  // write a subject line the caller never touched — the illegality predates the
+  // edit and the message below is what fixes it.
+  //
+  // This comes after the strand question on purpose: when a channel edit both
+  // misdescribes this row and strands live steps, the rows are the reason the edit
+  // is not worth making, and clearing a subject would not unstrand them.
+  if (hasOwn("channel") || hasOwn("subject")) {
+    const verdict = subjectProblem({
+      name: _owned.name,
+      channel: hasOwn("channel") ? (input.data.channel as string) : _owned.channel,
+      subject: hasOwn("subject") ? (input.data.subject as string | null) : _owned.subject,
+    });
+    if (verdict) return fieldProblem("subject", verdict);
   }
 
   const template = await prisma.template.update({ where: { id }, data: input.data });

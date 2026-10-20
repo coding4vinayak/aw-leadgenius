@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { validateBody, fieldProblem } from "@/lib/validate";
 import { TEMPLATE_CREATE } from "@/lib/fields";
 import { normalizeVariableDeclaration, checkTemplateVariables } from "@/lib/template-vars";
+import { subjectProblem } from "@/lib/subject-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,16 @@ async function POST_impl(request: Request) {
     const problems = checkTemplateVariables(declared.names, [input.data.subject, input.data.body]);
     if (problems.length) return fieldProblem("variables", problems.join("; "));
   }
+
+  // The other half of the row's own meaning: `channel` says who would carry this
+  // copy and `subject` says what the carrier reads, and the field table cannot
+  // express that one of them decides whether the other is mandatory. A blank
+  // subject on an EMAIL template reaches a prospect as "New message"; a subject
+  // on a chat template is a line nobody sends. `subject` is named as the field
+  // either way because it is the column the rule polices, and the message
+  // spells out both ways to fix it.
+  const subjectVerdict = subjectProblem({ name: input.data.name, channel: input.data.channel, subject: input.data.subject });
+  if (subjectVerdict) return fieldProblem("subject", subjectVerdict);
 
   const template = await prisma.template.create({ data: { workspaceId, ...input.data } });
   return NextResponse.json(template, { status: 201 });

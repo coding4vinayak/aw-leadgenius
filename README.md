@@ -390,7 +390,9 @@ now, asked by every door that can write either half:
   that reference it, the arms whose copy it is — and refuses by name, because a
   referenced template cannot be deleted, so this is the one edit that changes what
   a live step sends without the step being touched. Patching the channel a
-  template already carries strands nothing, so it is not asked.
+  template already carries strands nothing, so *that* question is not asked — the
+  row's own subject verdict is, whichever of the two keys the caller named (see
+  *What the subject column means*).
 - `executeStep` refuses the rows a migration or a direct database edit left
   mismatched, before selecting a sender or writing a `SentMessage` — the harm is
   the one a prospect reads.
@@ -398,6 +400,46 @@ now, asked by every door that can write either half:
 And because no template can be written for `CALL` or `TASK`, a step on those
 channels carries no copy at all: the door says so rather than storing a reference
 nothing would ever render.
+
+## What the subject column means
+
+`prisma/schema.prisma` comments `subject String?` as `// For email`, and no code
+has ever read that as a rule. The column has exactly one reader: the engine
+renders a subject *only* for an `EMAIL` step, `channels/email.ts` sends
+`msg.subject || "New message"`, `sendLinkedIn` posts a literal provider subject of
+its own, and `sendWhatsApp` does not take the argument. So both ways of ignoring
+that one reader are bugs a person notices — an `EMAIL` template with an empty
+subject mails a mail titled **"New message"** (the harm above, now reachable
+through a path that breaks no channel rule: `subject` is optional at both doors),
+and a subject on a `LINKEDIN` or `WHATSAPP` template is written, stored, returned
+by every read of the row, and delivered to nobody.
+
+`subjectProblem({ name, channel, subject })` is the verdict, and whether the
+column is mandatory or meaningless is decided by *another field* — which is what a
+per-field table cannot express, so it lives in one module:
+
+- `POST /api/templates` judges the row it was handed: `channel: "EMAIL"` with the
+  subject left out, blank or whitespace is a 400 on `subject`, and so is a subject
+  on a chat template.
+- `PATCH /api/templates/{id}` judges the row the update *would* leave, overlaying
+  the stored `channel` and `subject` — the rule #22 set for `variables`. Editing
+  only one half cannot quietly orphan the other; moving an email template's
+  channel onto a carrier with no subject column is refused — after the rows it
+  would strand are named, because clearing a subject does not unstrand them. A
+  patch that names neither key (a typo in `name`, new `body` text) is not asked to
+  write a subject line it never touched.
+- `executeStep` refuses an `EMAIL` step whose template carries no subject, before
+  rendering or storing anything — for the templates written before the rule. It is
+  deliberately narrower than the doors (`sendSubjectProblem`): a chat template that
+  carries a subject holds the author's dead copy, and stopping a message that would
+  arrive complete, to lecture about a column no carrier reads, is the wrong trade.
+
+The step doors are not among the callers, because they can write neither half of
+this pair: `POST /api/sequences` points at a template rather than composing one,
+and a subjectless email template is already refused at its own door. A track
+pointing at one that predates the rule is caught by the send guard above, and
+`POST /api/enrollments` reports it in `warning` the way it reports every
+first-step refusal.
 
 ## Contact lifecycle stops outreach
 
