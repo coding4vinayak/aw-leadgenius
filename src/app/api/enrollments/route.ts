@@ -43,6 +43,19 @@ async function POST_impl(request: Request) {
   if (sequence.steps.length === 0) {
     return NextResponse.json({ error: "sequence has no steps — add steps before enrolling" }, { status: 409 });
   }
+  // A contact the workspace marked dead does not start an outreach.
+  // `Contact.status` is the operator's lifecycle column — bounced, unsubscribed,
+  // do-not-contact — and until this check enrolling a DO_NOT_CONTACT contact was
+  // a clean 201 whose sequence would email them anyway, which is exactly the
+  // "spam complaints" half of the sentence this product sells against. A status
+  // that changes *after* enrollment is the engine's problem to stop (see
+  // `sequence-engine`); this boundary is the one that refuses to start.
+  if (contact.status !== "ACTIVE") {
+    return NextResponse.json(
+      { error: `contact is ${contact.status} — only an ACTIVE contact can start an outreach; set the contact back to ACTIVE first` },
+      { status: 409 },
+    );
+  }
 
   if (campaignId) {
     const campaign = await prisma.campaign.findFirst({ where: { id: campaignId, workspaceId } });
