@@ -548,7 +548,12 @@ async function hasClick(enrollmentId: string): Promise<boolean> {
   return prisma.activity.findFirst({ where: { enrollmentId, type: "CLICKED" } }).then(Boolean);
 }
 
-function renderTemplate(template: string, contact: any, metadata?: any): string {
+/**
+ * The merge engine. Exported because the vocabulary it implements is now a
+ * promise two routes check, and the `0`-renders-`0` rule below is worth an
+ * answer rather than a source guard.
+ */
+export function renderTemplate(template: string, contact: any, metadata?: any): string {
   // The five column substitutions are not five literal lines anymore — they
   // iterate `MERGEABLE_COLUMNS`, the same list `./template-vars` checks
   // declarations against. What the send fills and what the boundary promises
@@ -560,7 +565,15 @@ function renderTemplate(template: string, contact: any, metadata?: any): string 
     // landing verbatim in the prospect's email.
     out = out.replace(new RegExp(`\\{\\{${column}\\}\\}`, "g"), () => contact?.[column] || "");
   }
-  return out.replace(/\{\{(\w+)\}\}/g, (_, key) => metadata?.[key] || "");
+  // The catch-all is the half of the vocabulary `./template-vars` cannot fill
+  // from the contact row, so it is the half the enrollment's metadata answers —
+  // and the stringification is deliberate: a merge value of `0` or `false` is
+  // an answer a prospect should read, which the old `|| ""` mailed as a blank.
+  // An absent name and a stored null still merge to nothing.
+  return out.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    const value = metadata?.[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
 }
 
 function calculateNextAction(step: SequenceStepConfig): Date {

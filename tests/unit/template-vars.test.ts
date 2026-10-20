@@ -132,9 +132,8 @@ describe("one vocabulary: the renderer iterates what the boundary knows", () => 
   });
 
   it("the metadata catch-all still closes the render, so {{anyWord}} remains a token shape", () => {
-    assert.ok(
-      render.includes('return out.replace(/\\{\\{(\\w+)\\}\\}/g, (_, key) => metadata?.[key] || "")'),
-    );
+    assert.ok(render.includes("return out.replace(/\\{\\{(\\w+)\\}\\}/g"));
+    assert.ok(render.includes("const value = metadata?.[key]"));
   });
 
   it("the renderer knows nothing else about declarations", () => {

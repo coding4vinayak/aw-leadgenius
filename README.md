@@ -320,6 +320,20 @@ text contains, or writing a token no declaration covers, answers 400 naming the
 mismatch; an *empty* declaration stays silent, because a template whose author
 never made a promise has none to break.
 
+The other half of that vocabulary is `Enrollment.metadata`, and it is now a
+written column, not only a read one. `POST /api/enrollments` takes it and so
+does `PATCH /api/enrollments/{id}` (`status` stopped being required there for
+exactly this reason: a caller fixing one merge value should not have to re-send
+the status whose branch re-enqueues the step). A merge value is text, a number
+or `true`/`false` — nothing nested, no `null`, keys word-shaped because a name
+the renderer's `{{\w+}}` cannot match is dead data. Then every declared name the
+contact row *cannot* fill must arrive with a non-blank value, or the enrollment
+is refused 400 naming the step, the template and the token: `{{seats}}` is a
+promise the send keeps only if someone answered it. `0` and `false` count as
+answers, and the renderer mails them as `0` and `false`. A patch *replaces* the
+object, so it is re-checked the same way — clearing a value the sequence still
+promises is refused, exactly like never sending it.
+
 `PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
 RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
 only RUNNING tests, and enrollments made while paused join no cohort (that is
@@ -613,8 +627,10 @@ has not yet moved — and registration happens last and bounded by the vendored
 `awaitWithRegistrationTimeout` (§8.55), because against a Redis that answers nothing
 `upsertJobScheduler` does not reject, it never settles, and an unbounded await there hangs the
 boot rather than merely losing the schedule. Why a scan instead of one delayed job per step:
-`PATCH /api/enrollments/:id` has exactly one writable field, `nextActionAt`, and a delayed job
-sits in Redis where that edit cannot reach it — a scan reads the column the engine writes, so
+`nextActionAt` is a column the *engine* moves — the step advance re-dates the wait and a
+no-sender pass records one — while `PATCH /api/enrollments/:id` takes only `status` and
+`metadata`, and a job already parked in Redis is timed against the date it was minted
+with, not the one the row now holds. A scan reads the column the engine writes, so
 the pause/reschedule control means something again, rows written before this change are covered,
 and a retry cannot mint a fresh due date from a second clock. Guards in
 `tests/unit/sequence-sweep.test.ts` (27). After-probe on a **copy** of `dev.db` and Redis db 13:

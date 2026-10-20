@@ -3,7 +3,9 @@ import { withAuth, authedWorkspaceId } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { processSequenceStep } from "@/lib/sequence-engine";
 import { assignVariant } from "@/lib/abtest";
-import { validateBody } from "@/lib/validate";
+import { validateBody, fieldProblem } from "@/lib/validate";
+import { normalizeMergeValues, unfilledMergeTokens, type MergeValues } from "@/lib/template-vars";
+import { mergePromisesForSteps } from "@/lib/merge-promise";
 import { ENROLLMENT_CREATE } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -76,6 +78,11 @@ async function POST_impl(request: Request) {
   // control cohort.
   let armSequenceId = sequenceId;
   let abVariantId: string | undefined;
+  // The steps whose templates decide what this enrollment must be able to
+  // merge. It starts as the requested sequence's and is replaced below when an
+  // A/B arm overrides it — the promise to check is the one the send will keep,
+  // not the one the caller typed.
+  let drivingSteps = [...sequence.steps].sort((a, b) => a.stepNumber - b.stepNumber);
   const test = await prisma.aBTest.findFirst({
     where: { campaignId, workspaceId, status: "RUNNING" },
     orderBy: { startedAt: "asc" },
@@ -97,6 +104,7 @@ async function POST_impl(request: Request) {
           return NextResponse.json({ error: `arm "${chosen.name}" points at a sequence with no steps` }, { status: 409 });
         }
         armSequenceId = chosen.sequenceId;
+        drivingSteps = [...armSequence.steps].sort((a, b) => a.stepNumber - b.stepNumber);
       }
     }
   }
@@ -108,8 +116,31 @@ async function POST_impl(request: Request) {
     return NextResponse.json({ error: "contact is already actively enrolled in this sequence", enrollmentId: existing.id }, { status: 409 });
   }
 
+  // `Enrollment.metadata` is the only source the renderer's catch-all reads for
+  // a merge name the contact row cannot fill, and until this round no API door
+  // wrote it: a sequence whose step declared `{{meetingDate}}` enrolled cleanly
+  // and mailed "Hi ,". So the promise a template makes is now cashed at the
+  // door that starts the send — every declared, non-column name must arrive
+  // with a value here, or the enrollment is refused by the name it cannot fill.
+  let mergeValues: MergeValues | undefined;
+  if (input.data.metadata !== undefined) {
+    const normalized = normalizeMergeValues(input.data.metadata);
+    if (!normalized.ok) return fieldProblem("metadata", normalized.error);
+    mergeValues = normalized.values;
+  }
+  const unfilled = unfilledMergeTokens(await mergePromisesForSteps(drivingSteps), mergeValues);
+  if (unfilled.length) return fieldProblem("metadata", unfilled.join("; "));
+
   const enrollment = await prisma.enrollment.create({
-    data: { campaignId, sequenceId: armSequenceId, contactId, status: "ACTIVE", currentStep: 0, ...(abVariantId ? { abVariantId } : {}) },
+    data: {
+      campaignId,
+      sequenceId: armSequenceId,
+      contactId,
+      status: "ACTIVE",
+      currentStep: 0,
+      ...(abVariantId ? { abVariantId } : {}),
+      ...(mergeValues ? { metadata: mergeValues } : {}),
+    },
   });
 
   let warning: string | undefined;
