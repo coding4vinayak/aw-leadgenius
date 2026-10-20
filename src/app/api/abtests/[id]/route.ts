@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { validateBody } from "@/lib/validate";
 import { ABTEST_PATCH } from "@/lib/fields";
 import { verdictEvidence } from "@/lib/abtest";
+import { cohortProblem, declaredSplit } from "@/lib/traffic-split";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,14 @@ export const dynamic = "force-dynamic";
  * `confidence` may stay null (no verdict yet), but a verdict with no evidence
  * behind it is the accepted-but-ignored column this repository keeps having
  * to come back for.
+ *
+ * Completing *with a winner* is also the only place the declared split gets
+ * read: `trafficSplit` is a copy of the arm rows and is what
+ * `GET /api/campaigns/:id` reports as the campaign's split, so the verdict
+ * refuses a copy that no longer describes its arms and a set of cohorts that is
+ * not the split's (`./traffic-split`). Refusing a verdict is not refusing to
+ * close: completing without a winner stays available, and is the remedy both
+ * messages give — a test can end without claiming a comparison it did not run.
  */
 async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -40,8 +49,9 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
     select: {
       workspaceId: true,
       status: true,
+      trafficSplit: true,
       startedAt: true,
-      variants: { select: { id: true, name: true, isControl: true } },
+      variants: { select: { id: true, name: true, weight: true, isControl: true } },
     },
   });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -73,6 +83,24 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
     if (!winner) {
       return NextResponse.json({ error: `winningVariant "${winningVariant}" is not a variant of this test` }, { status: 400 });
     }
+    // Naming a winner promises that these cohorts were the ones the split
+    // declared, and the split is a number that lives twice: as the JSON the
+    // create route copied off the arm rows, and as the enrollments the
+    // assignment actually filled. Both questions are asked here, before the
+    // evidence below, because a verdict resting on an audience that is not the
+    // one promised is not thin evidence — it is a different test, and that is
+    // what the operator needs to hear first.
+    const declared = declaredSplit(owned.trafficSplit, owned.variants);
+    if (!declared.ok) return NextResponse.json({ error: declared.error }, { status: 409 });
+    // Every enrollment the test placed, whatever the contact has since done:
+    // the cohort is who arrived, and a contact that bounced was assigned to this
+    // arm just the same. Scoped by variant id for the same reason the evidence
+    // below is — arm names are shared between live tests.
+    const cohorts = await Promise.all(
+      owned.variants.map(async (v) => ({ name: v.name, count: await prisma.enrollment.count({ where: { abVariantId: v.id } }) })),
+    );
+    const imbalance = cohortProblem(declared.split, cohorts);
+    if (imbalance) return NextResponse.json({ error: imbalance }, { status: 409 });
     // Creation validated exactly one control (validateAbTestSemantics), so a
     // stored test always has one.
     const control = owned.variants.find((v) => v.isControl)!;
