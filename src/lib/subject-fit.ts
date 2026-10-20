@@ -72,8 +72,17 @@ const MISSING_SUBJECT =
   'carries no subject — the subject line is the one thing a prospect reads before deciding whether to open, ' +
   'and the sender fills the blank with "New message"';
 
-const DEAD_SUBJECT = (channel: string): string =>
-  `carries a subject while being written for ${channel}, and only an email send ever reads that column — ` +
+/**
+ * The half that belongs after "the template \"X\" is written for LINKEDIN and".
+ *
+ * It used to name the channel again — "carries a subject while being written
+ * for LINKEDIN" — which said the same thing twice and, worse, implied the
+ * subject was written for LINKEDIN when it was written for email. The row's
+ * channel is already in the sentence; this half says what is wrong with the
+ * other column.
+ */
+const DEAD_SUBJECT = (): string =>
+  "carries a subject, and only an email send ever reads that column — " +
   "the line is stored, returned by every read of the row and delivered to nobody. Move the text into the body, " +
   `or declare the template ${EMAIL_CHANNEL} if the copy really is an email's`;
 
@@ -88,7 +97,7 @@ export function subjectProblem(template: TemplateSubject): string | null {
   if (subjectExpectation(template.channel) === "required") {
     return filled ? null : `the template "${template.name}" is an ${template.channel} template that ${MISSING_SUBJECT}`;
   }
-  return filled ? `the template "${template.name}" is written for ${template.channel} and ${DEAD_SUBJECT(template.channel)}` : null;
+  return filled ? `the template "${template.name}" is written for ${template.channel} and ${DEAD_SUBJECT()}` : null;
 }
 
 /**
