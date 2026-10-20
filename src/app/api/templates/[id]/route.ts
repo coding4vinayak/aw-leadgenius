@@ -5,6 +5,7 @@ import { validateBody, fieldProblem } from "@/lib/validate";
 import { TEMPLATE_PATCH } from "@/lib/fields";
 import { templateInUseMessage } from "@/lib/templates";
 import { normalizeVariableDeclaration, checkTemplateVariables } from "@/lib/template-vars";
+import { strandedByChannel } from "@/lib/channel-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   const requestBody = await request.json();
   const _owned = await prisma.template.findUnique({
     where: { id },
-    select: { workspaceId: true, body: true, subject: true, variables: true },
+    select: { workspaceId: true, name: true, channel: true, body: true, subject: true, variables: true },
   });
   if (!_owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
   await assertOwns(request, _owned.workspaceId);
@@ -52,6 +53,18 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
     }
     const problems = checkTemplateVariables(declaredNames, [merged.subject, merged.body]);
     if (problems.length) return fieldProblem("variables", problems.join("; "));
+  }
+
+  // `channel` says what kind of copy this row is, and steps say which carrier they
+  // send it on from the other side of the same reference. Deleting a referenced
+  // template is refused outright (DELETE above), so moving its channel is the one
+  // edit that changes what a live step sends without the step being touched at all
+  // — which is why it is judged against the rows that reference it, by name, under
+  // the merged-row rule #22 established for `variables`. Patching the channel it
+  // already carries strands nothing, so it is not asked.
+  if (input.data.channel !== undefined && input.data.channel !== _owned.channel) {
+    const stranded = await strandedByChannel(id, _owned.name, input.data.channel);
+    if (stranded.length) return fieldProblem("channel", stranded.join("; "));
   }
 
   const template = await prisma.template.update({ where: { id }, data: input.data });

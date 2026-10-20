@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { withAuth, assertOwns } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
-import { validateBody } from "@/lib/validate";
+import { validateBody, fieldProblem } from "@/lib/validate";
 import { SEQUENCE_PATCH } from "@/lib/fields";
+import { sequenceChannelProblems } from "@/lib/channel-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +35,20 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   // created with the sequence.
   const input = validateBody(body, SEQUENCE_PATCH, { requireWrite: true });
   if (!input.ok) return input.error;
+
+  // A sequence's `channel` is not a label on the row: it is the heading the daily
+  // rollup files every message of the track under. Patching it therefore changes
+  // a claim about steps this route does not touch, and the steps are still stored
+  // with the channels the engine sends on, so the new value is checked against them
+  // before it is written — the merged row is judged, not the incoming field.
+  if (input.data.channel !== undefined) {
+    const steps = await prisma.sequenceStep.findMany({
+      where: { sequenceId: id },
+      select: { stepNumber: true, channel: true },
+    });
+    const problem = sequenceChannelProblems(input.data.channel, steps);
+    if (problem) return fieldProblem("channel", problem);
+  }
 
   const sequence = await prisma.sequence.update({ where: { id }, data: input.data });
   return NextResponse.json(sequence);

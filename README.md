@@ -171,7 +171,10 @@ POST   /api/campaigns                      # create (draft)
 GET    /api/campaigns/{id}                 # detail + sequences + enrollments
 PATCH  /api/campaigns/{id}                 # rename, start, pause, complete
 GET    /api/sequences?workspaceId=         # list
-POST   /api/sequences                      # create with steps
+POST   /api/sequences                      # create with steps — each step's
+                                           # channel must fit the channel its
+                                           # template was written for (see
+                                           # *Which channel carries which copy*)
 GET    /api/contacts?workspaceId=          # list
 POST   /api/contacts                       # create, optionally into lists
 GET    /api/contacts/{id}                  # detail
@@ -358,6 +361,43 @@ evidence. A negative z is stamped rather than hidden — it means the "winner"
 replied *less* than control on its own numbers.
 `DRAFT` is the column's default but not a transition target: nothing reads it,
 nothing wrote it, and "return to before the test existed" is not a lifecycle.
+
+## Which channel carries which copy
+
+Two columns describe one message from opposite ends, and each was policed only
+against its own vocabulary: `Template.channel` says what kind of copy the row is
+(`EMAIL | WHATSAPP | LINKEDIN`) and `SequenceStep.channel` says who carries it
+(those three plus `CALL | TASK`), while nothing compared them. The engine takes
+the body from the template and a subject *only* when the step says `EMAIL`, so an
+email whose copy was written for LinkedIn has no subject to render and
+`sendEmail` titles it **"New message"**; a `WHATSAPP` step on an email template
+sends its HTML as one bubble. `isChannelMismatch(step, template)` is the one rule
+now, asked by every door that can write either half:
+
+- `POST /api/sequences` refuses a step whose template was written for another
+  channel, and refuses a track whose declared `channel` its own steps contradict.
+  `MULTI` is the vocabulary's word for a mixed track and is exempt: that claim is
+  what the daily rollup files every send under (`analytics.ts` groups by
+  `enrollment.sequence.channel`), so a lie there is a wrong *number*, not a wrong
+  message — which is also why the send does not check it.
+- `PATCH /api/sequences/{id}` re-asks the **stored** steps when `channel` changes;
+  the route cannot write a step, so the new claim is judged against the rows that
+  already exist.
+- `POST /api/abtests` judges an arm's template against **every** step of the track
+  it overrides (see *A/B tests* above), naming the first that breaks and how many
+  follow.
+- `PATCH /api/templates/{id}` asks what a `channel` edit would strand — the steps
+  that reference it, the arms whose copy it is — and refuses by name, because a
+  referenced template cannot be deleted, so this is the one edit that changes what
+  a live step sends without the step being touched. Patching the channel a
+  template already carries strands nothing, so it is not asked.
+- `executeStep` refuses the rows a migration or a direct database edit left
+  mismatched, before selecting a sender or writing a `SentMessage` — the harm is
+  the one a prospect reads.
+
+And because no template can be written for `CALL` or `TASK`, a step on those
+channels carries no copy at all: the door says so rather than storing a reference
+nothing would ever render.
 
 ## Contact lifecycle stops outreach
 

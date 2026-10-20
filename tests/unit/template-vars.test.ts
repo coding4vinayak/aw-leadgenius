@@ -159,7 +159,14 @@ describe("the template routes check before Prisma ever sees the row", () => {
   });
 
   it("patch overlays the STORED row — editing body alone cannot silently orphan a declaration", () => {
-    assert.match(patch, /select: \{ workspaceId: true, body: true, subject: true, variables: true \}/);
+    // The guard asks for the columns the overlay needs rather than the literal
+    // select, because the read has a second job since #25 (a `channel` edit is
+    // judged against the rows that reference this template, which needs the
+    // template's own name and channel) and a future column must not read here.
+    const overlay = /_owned = await prisma\.template\.findUnique\(\{[\s\S]*?\}\);/.exec(patch)?.[0] ?? "";
+    for (const column of ["workspaceId", "body", "subject", "variables"]) {
+      assert.ok(overlay.includes(`${column}: true`), `the overlay read must still carry ${column}`);
+    }
     assert.match(patch, /hasOwn\("variables"\) \? input\.data\.variables : _owned\.variables/);
     const checkAt = patch.indexOf("checkTemplateVariables(declaredNames, [merged.subject, merged.body])");
     const updateAt = patch.indexOf("prisma.template.update");

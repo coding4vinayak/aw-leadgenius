@@ -5,6 +5,7 @@ import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
 import { REPUTATION_FLOOR } from "./reputation";
 import { MERGEABLE_COLUMNS } from "./template-vars";
 import { effectiveTemplateId } from "./merge-promise";
+import { isChannelMismatch, stepChannelProblem } from "./channel-fit";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -464,6 +465,21 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
   // subject to a real prospect.
   if (templateId && !template) {
     throw new Error(`step ${step.stepNumber} points at a template that no longer exists — attach a new template before it can send`);
+  }
+  // The other half of the same residue: `step.channel` picks the sender and
+  // `template.channel` describes the copy, and the doors now refuse a step that
+  // pairs them wrongly (#25), so this is what remains for the rows a migration or
+  // a direct edit left already mismatched. It has to be here rather than only at
+  // the doors, because the harm is the one thing a prospect reads — an EMAIL step
+  // on a non-email template has no subject column to render and `sendEmail` titles
+  // the mail "New message". Judged on the copy the send will actually use, so an
+  // arm template riding an email track is caught by the same comparison (#24).
+  //
+  // The sequence's declared `channel` is deliberately NOT checked here: that claim
+  // is about the heading the daily rollup files the message under, and refusing a
+  // real message over a reporting label would trade a wrong number for no number.
+  if (template && isChannelMismatch(step, template)) {
+    throw new Error(stepChannelProblem(step, template));
   }
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;
