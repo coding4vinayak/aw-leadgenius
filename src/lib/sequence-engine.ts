@@ -4,6 +4,7 @@ import { triggerWebhooks } from "./webhooks";
 import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
 import { REPUTATION_FLOOR } from "./reputation";
 import { MERGEABLE_COLUMNS } from "./template-vars";
+import { effectiveTemplateId } from "./merge-promise";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -446,10 +447,12 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
   // A variant's template overrides the step's for every step of the arm —
   // that is the division of labour the two fields state: `sequenceId` sends a
   // different track, `templateId` sends different copy down the same one.
+  // The rule lives in `./merge-promise` because the enrollment doors answer the
+  // same question before a row exists: which copy will this step actually send.
   // An arm template that no longer resolves refuses the send instead of
   // falling back: handing the arm the control's copy would silently convert
   // its cohort, and the test would then compare a message nobody was sent.
-  const templateId = enrollment.abVariant?.templateId ?? step.templateId;
+  const templateId = effectiveTemplateId(enrollment.abVariant?.templateId, step.templateId);
   const template = templateId ? await prisma.template.findUnique({ where: { id: templateId } }) : null;
   if (enrollment.abVariant?.templateId && !template) {
     throw new Error(`arm "${enrollment.abVariant.name}" points at a template that no longer exists — fix the arm or pause the test before this step can send`);

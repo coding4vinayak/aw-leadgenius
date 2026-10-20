@@ -26,7 +26,7 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
 
   const current = await prisma.enrollment.findUnique({
     where: { id },
-    include: { campaign: { select: { workspaceId: true } }, sequence: { include: { steps: true } } },
+    include: { campaign: { select: { workspaceId: true } }, sequence: { include: { steps: true } }, abVariant: { select: { templateId: true } } },
   });
   if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
   await assertOwns(request, current.campaign.workspaceId);
@@ -34,12 +34,18 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   // `status` used to be the only thing this route took, and it used to be
   // required: an empty request wrote an empty update and returned the row
   // unchanged, and `"active"` stored a lowercase value that every comparison in
-  // the engine (`=== "ACTIVE"`) then misses. `metadata` is the second door this
-  // round opens, and it replaces the object rather than merging into it — so
-  // the promises the sequence still makes are checked against the values being
-  // stored, and clearing a promised value by leaving it out is refused the same
-  // way enroll refuses a missing one. Fixing a moved meeting is allowed;
-  // un-filling it is not.
+  // the engine (`=== "ACTIVE"`) then misses. `metadata` is the other door — the
+  // first wrote it at enroll, this one edits it after a meeting moves — and it
+  // replaces the object rather than merging into it, so the promises the
+  // sequence still makes are checked against the values being stored, and
+  // clearing a promised value by leaving it out is refused the same way enroll
+  // refuses a missing one. Fixing a moved meeting is allowed; un-filling it is
+  // not.
+  //
+  // And the promise is the resolved one. This row is already placed in an A/B
+  // arm, so the copy its next step sends is the variant's template wherever one
+  // exists — asking the bare `sequence.steps` here would judge the values against
+  // the control's wording while the caller is filling the arm's.
   const input = validateBody(body, ENROLLMENT_PATCH, { requireWrite: true });
   if (!input.ok) return input.error;
   const { status } = input.data;
@@ -48,7 +54,7 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
     const normalized = normalizeMergeValues(input.data.metadata);
     if (!normalized.ok) return fieldProblem("metadata", normalized.error);
     const unfilled = unfilledMergeTokens(
-      await mergePromisesForSteps([...current.sequence.steps].sort((a, b) => a.stepNumber - b.stepNumber)),
+      await mergePromisesForSteps(current.sequence.steps, current.abVariant?.templateId),
       normalized.values,
     );
     if (unfilled.length) return fieldProblem("metadata", unfilled.join("; "));

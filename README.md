@@ -334,6 +334,15 @@ answers, and the renderer mails them as `0` and `false`. A patch *replaces* the
 object, so it is re-checked the same way — clearing a value the sequence still
 promises is refused, exactly like never sending it.
 
+Both doors ask about the copy the send will *actually* use, not the one the
+caller typed: the shared `effectiveTemplateId(variantTemplateId, stepTemplateId)`
+is what `executeStep` resolves a step's template with and what
+`mergePromisesForSteps` resolves every step with before reading declarations, so
+an arm whose template declares `{{meetingDate}}` is refused at enroll by that
+template's name — the version that used to check only `step.templateId` waved the
+enrollment through and mailed the blank to that arm's cohort. An arm template
+overrides every step, so it is counted as **one** promise, not one per step.
+
 `PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
 RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
 only RUNNING tests, and enrollments made while paused join no cohort (that is

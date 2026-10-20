@@ -2,16 +2,28 @@ import { prisma } from "@/lib/db";
 import { MERGEABLE_COLUMNS } from "./template-vars";
 
 /**
- * The merge promises a sequence's steps actually make, read from the templates
- * they reference.
+ * Which template a step will actually send.
  *
- * `Template.variables` is a promise about a send, and `unfilledMergeTokens`
- * decides whether an enrollment can keep it — but the routes must first turn
- * `step → templateId → declaration` into one honest list, and two doors that
- * each wrote their own version of that read is how this fleet got its
- * divergent numbers in the first place. One function, used by enroll and by
- * the enrollment patch, so both ask the same question of the same rows.
+ * Exported because TWO callers must agree on it: the engine picks the copy with
+ * it, and the enrollment doors use it to decide which merge promises are live.
+ * An arm's variant template overrides EVERY step of the arm — that is the
+ * division of labour the variant's two fields state: `sequenceId` sends a
+ * different track, `templateId` sends different copy down the same one. A door
+ * that read `step.templateId` alone would therefore check promises the send
+ * never makes and wave through the one it does: the arm's template declaring
+ * `{{meetingDate}}` would enroll clean and mail the blank.
+ *
+ * `undefined` is accepted beside `null` because the two callers describe the
+ * same absence differently — the engine's step type has `templateId?: string`
+ * while the database column is nullable — and neither can override anything.
  */
+export function effectiveTemplateId(
+  variantTemplateId: string | null | undefined,
+  stepTemplateId: string | null | undefined,
+): string | null {
+  return variantTemplateId ?? stepTemplateId ?? null;
+}
+
 export interface MergePromise {
   stepNumber: number;
   templateName: string;
@@ -39,25 +51,48 @@ function columnExempt(variables: unknown): string[] {
   );
 }
 
+/**
+ * The merge promises the sends of one enrollment actually make, read from the
+ * templates those steps will resolve to.
+ *
+ * One function, used by both enrollment doors, because two doors each writing
+ * their own `step → template → declaration` read is how this fleet got its
+ * divergent definitions of the same number. The step order is decided here for
+ * the same reason: the first step that reaches a template is the one its
+ * refusal names.
+ */
 export async function mergePromisesForSteps(
-  steps: Array<{ stepNumber: number; templateId: string | null }>,
+  steps: Array<{ stepNumber: number; templateId: string | null | undefined }>,
+  variantTemplateId?: string | null,
 ): Promise<MergePromise[]> {
-  const templateIds = [...new Set(steps.map((step) => step.templateId).filter((id): id is string => id !== null))];
-  if (templateIds.length === 0) return [];
+  const ordered = [...steps].sort((a, b) => a.stepNumber - b.stepNumber);
+  const ids = [
+    ...new Set(
+      ordered
+        .map((step) => effectiveTemplateId(variantTemplateId, step.templateId))
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+  if (ids.length === 0) return [];
 
   const templates = await prisma.template.findMany({
-    where: { id: { in: templateIds } },
+    where: { id: { in: ids } },
     select: { id: true, name: true, variables: true },
   });
   const byId = new Map(templates.map((template) => [template.id, template]));
 
   const promises: MergePromise[] = [];
-  for (const step of steps) {
-    if (!step.templateId) continue;
-    const template = byId.get(step.templateId);
+  const counted = new Set<string>();
+  for (const step of ordered) {
+    const templateId = effectiveTemplateId(variantTemplateId, step.templateId);
+    // An arm template is ONE promise, not one per step it overrides: three
+    // identical refusals would be noise, and the value demanded is the same.
+    if (!templateId || counted.has(templateId)) continue;
+    const template = byId.get(templateId);
     // A dangling reference is the engine's to refuse at send, by name; here it
     // simply makes no promise.
     if (!template) continue;
+    counted.add(templateId);
     const declared = columnExempt(template.variables);
     if (declared.length) promises.push({ stepNumber: step.stepNumber, templateName: template.name, declared });
   }

@@ -17,6 +17,7 @@ import {
   unfilledMergeTokens,
 } from "../../src/lib/template-vars";
 import { renderTemplate } from "../../src/lib/sequence-engine";
+import { effectiveTemplateId } from "../../src/lib/merge-promise";
 import { ENROLLMENT_CREATE, ENROLLMENT_PATCH } from "../../src/lib/fields";
 import { validateBody } from "../../src/lib/validate";
 
@@ -179,10 +180,17 @@ describe("both enrollment doors cash the promise before Prisma sees the row", ()
   });
 
   it("the enroll door asks about the steps that will actually send, including an A/B arm's", () => {
-    assert.match(enroll, /let drivingSteps = \[\.\.\.sequence\.steps\]\.sort\(\(a, b\) => a\.stepNumber - b\.stepNumber\)/);
-    assert.match(enroll, /drivingSteps = \[\.\.\.armSequence\.steps\]\.sort\(\(a, b\) => a\.stepNumber - b\.stepNumber\)/);
-    assert.match(enroll, /unfilledMergeTokens\(await mergePromisesForSteps\(drivingSteps\), mergeValues\)/);
+    assert.match(enroll, /let drivingSteps = \[\.\.\.sequence\.steps\]/);
+    assert.match(enroll, /drivingSteps = \[\.\.\.armSequence\.steps\]/);
+    // …and the arm's own copy of the wording, which the engine puts above every
+    // step of the track. A door that stopped at the sequence would judge the
+    // control's declaration and let the arm mail its unanswered token.
+    assert.match(enroll, /armTemplateId = chosen\.templateId/);
+    assert.match(enroll, /unfilledMergeTokens\(await mergePromisesForSteps\(drivingSteps, armTemplateId\), mergeValues\)/);
     assert.doesNotMatch(enroll, /mergePromisesForSteps\(sequence\.steps/);
+    // The override rule is not re-implemented at the door, either.
+    assert.doesNotMatch(enroll, /\?\? step\.templateId/);
+    assert.doesNotMatch(patch, /\?\? step\.templateId/);
   });
 
   it("both refuse through the declared 400 envelope, naming metadata", () => {
@@ -201,18 +209,31 @@ describe("both enrollment doors cash the promise before Prisma sees the row", ()
     assert.match(patch, /input\.data\.metadata = normalized\.values/);
   });
 
-  it("the patch door's re-check is what makes a replacement honest: the values it compares are the new ones", () => {
-    assert.match(patch, /unfilledMergeTokens\(\n?\s*await mergePromisesForSteps\(\[\.\.\.current\.sequence\.steps\]\.sort\(\(a, b\) => a\.stepNumber - b\.stepNumber\)\),\n?\s*normalized\.values,\n?\s*\)/);
+  // The row this door edits is already placed in an arm, so its pending copy is
+  // the variant's wherever one exists: judging the replacement against the bare
+  // steps would refuse values the arm never asks for and accept an edit that
+  // strands the one it does.
+  it("the patch door's re-check is what makes a replacement honest: the values it compares are the new ones, against the copy this row will send", () => {
+    assert.match(patch, /abVariant: \{ select: \{ templateId: true \} \}/);
+    assert.match(patch, /unfilledMergeTokens\(\n?\s*await mergePromisesForSteps\(current\.sequence\.steps, current\.abVariant\?\.templateId\),\n?\s*normalized\.values,\n?\s*\)/);
   });
 });
 
 describe("the shared loader is one definition", () => {
   const loader = source("../../src/lib/merge-promise.ts");
+  const engine = source("../../src/lib/sequence-engine.ts");
+  const enroll = source("../../src/app/api/enrollments/route.ts");
+  const patch = source("../../src/app/api/enrollments/[id]/route.ts");
 
   it("reads only what the question needs, once per template", () => {
     assert.match(loader, /select: \{ id: true, name: true, variables: true \}/);
-    assert.match(loader, /\[\.\.\.new Set\(steps\.map\(\(step\) => step\.templateId\)/);
-    assert.match(loader, /if \(templateIds\.length === 0\) return \[\]/);
+    assert.match(loader, /\.map\(\(step\) => effectiveTemplateId\(variantTemplateId, step\.templateId\)\)/);
+    assert.match(loader, /if \(ids\.length === 0\) return \[\]/);
+    // One arm template overrides every step of the arm, so it is one promise: a
+    // caller with three steps would otherwise be told the same missing name
+    // three times, with three different step numbers.
+    assert.match(loader, /if \(!templateId \|\| counted\.has\(templateId\)\) continue/);
+    assert.match(loader, /const ordered = \[\.\.\.steps\]\.sort\(\(a, b\) => a\.stepNumber - b\.stepNumber\)/);
   });
 
   it("exempts the same five columns the renderer iterates, and ignores a shape it cannot match", () => {
@@ -224,7 +245,29 @@ describe("the shared loader is one definition", () => {
 
   it("leaves a dangling template reference to the engine, which refuses it at send by name", () => {
     assert.match(loader, /if \(!template\) continue/);
-    assert.match(loader, /if \(!step\.templateId\) continue/);
+    // …and a step with no template at all makes no promise, resolved or not.
+    assert.match(loader, /if \(!templateId \|\| counted\.has\(templateId\)\) continue/);
+  });
+
+  // The rule the doors and the engine share, asked of the two shapes absence
+  // comes in. A door that got this wrong either judged the control's copy or
+  // demanded a value for a token nobody was about to send.
+  it("the resolver is the arm's copy when there is one, the step's when there is not", () => {
+    assert.equal(effectiveTemplateId("variant-tpl", "step-tpl"), "variant-tpl");
+    assert.equal(effectiveTemplateId(null, "step-tpl"), "step-tpl");
+    assert.equal(effectiveTemplateId(undefined, "step-tpl"), "step-tpl");
+    assert.equal(effectiveTemplateId("variant-tpl", null), "variant-tpl");
+    assert.equal(effectiveTemplateId(null, undefined), null);
+    assert.equal(effectiveTemplateId(undefined, null), null);
+  });
+
+  it("the engine and both doors call that one function, and none keeps a private version", () => {
+    assert.match(loader, /return variantTemplateId \?\? stepTemplateId \?\? null/);
+    assert.match(engine, /import \{ effectiveTemplateId \} from "\.\/merge-promise"/);
+    assert.match(enroll, /import \{ mergePromisesForSteps \} from "@\/lib\/merge-promise"/);
+    assert.match(patch, /import \{ mergePromisesForSteps \} from "@\/lib\/merge-promise"/);
+    assert.doesNotMatch(enroll, /abVariant\?\.templateId \?\?/);
+    assert.doesNotMatch(patch, /abVariant\?\.templateId \?\?/);
   });
 
   it("nothing else in the app defines the read", () => {
