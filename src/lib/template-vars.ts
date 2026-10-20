@@ -38,10 +38,17 @@ export function extractMergeVars(...texts: Array<string | null | undefined>): st
 }
 
 /**
- * The declaration may be a list of names or a comma-separated string, and both
- * spellings are normalised to one list: trimmed, de-duplicated in order, capped.
- * A name the renderer could never substitute is refused here rather than
- * stored to be quietly unfilled later — `first-name` cannot match `{{\w+}}`.
+ * The declaration is stored as the array the shape rule leaves behind: a
+ * `json` column whose boundary accepts object-or-array and refuses a bare
+ * string, so `["a","b"]` is the only spelling a caller can send and the only
+ * shape a reader can find. `normalizeVariableDeclaration` still reads a
+ * comma-separated string too — the rule lives here, not in the field table,
+ * so a caller is one declaration-shape edit away from both spellings, never
+ * one function away.
+ *
+ * Names are trimmed, de-duplicated in order, and capped. A name the renderer
+ * could never substitute is refused here rather than stored to be quietly
+ * unfilled later — `first-name` cannot match `{{\w+}}`.
  */
 export function normalizeVariableDeclaration(
   value: unknown,

@@ -47,6 +47,18 @@ describe("normalizeVariableDeclaration", () => {
     assert.match(normalizeVariableDeclaration(["company,foo"]).error!, /word characters/);
   });
 
+  it("the field table is still the strict json kind: an array is the only spelling that reaches here", () => {
+    const fields = source("../../src/lib/fields.ts");
+    const createTable = /TEMPLATE_CREATE = \{[\s\S]*?\n\}/.exec(fields)?.[0] ?? "";
+    const patchTable = /TEMPLATE_PATCH = \{[\s\S]*?\n\}/.exec(fields)?.[0] ?? "";
+    assert.match(createTable, /variables: \{ kind: "json" \}/);
+    assert.match(patchTable, /variables: \{ kind: "json" \}/);
+    // A bare string cannot pass a `json` check ("must be an object or an
+    // array"), so the comma-separated reading above is the module's rule
+    // waiting one table edit away, not a promise the API makes today.
+    assert.match(source("../../src/lib/validation-engine.ts"), /must be an object or an array, got/);
+  });
+
   it("refuses a name the renderer could never substitute", () => {
     const bad = normalizeVariableDeclaration(["first-name", "first name"]);
     assert.equal(bad.ok, false);

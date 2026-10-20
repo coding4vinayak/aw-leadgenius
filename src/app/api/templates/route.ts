@@ -33,7 +33,7 @@ async function POST_impl(request: Request) {
   // blank in a prospect's email. It is now normalised to the one shape the
   // renderer can match and checked against the text it claims to describe,
   // so a stored declaration can only ever be a promise the send keeps.
-  if ("variables" in input.data && input.data.variables !== undefined && input.data.variables !== null) {
+  if ("variables" in input.data) {
     const declared = normalizeVariableDeclaration(input.data.variables);
     if (!declared.ok) return fieldProblem("variables", declared.error);
     input.data.variables = declared.names;

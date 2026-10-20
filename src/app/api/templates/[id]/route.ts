@@ -33,9 +33,9 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
   // editing only `body` must not silently orphan a declaration, and editing
   // only `variables` must not claim a token the stored text never uses. The
   // stored value is the default for each side of the comparison; a key the
-  // caller named overrides it. `variables: null` says "no promise" — the
-  // column goes empty and the rules go silent, exactly as for a template
-  // that was written before they had a reader.
+  // caller named overrides it. `variables: []` says "no promise" — the column
+  // goes empty and the rules go silent, exactly as for a template that was
+  // written before they had a reader.
   const hasOwn = (key: "body" | "subject" | "variables") => key in input.data;
   if (hasOwn("variables") || hasOwn("body") || hasOwn("subject")) {
     const merged = {
