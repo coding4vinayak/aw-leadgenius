@@ -5,6 +5,7 @@ import { pageParams } from "@/lib/pagination";
 import { validateBody, validateItems, type Validated } from "@/lib/validate";
 import { SEQUENCE_CREATE, SEQUENCE_STEP } from "@/lib/fields";
 import { conditionProblem } from "@/lib/sequence-engine";
+import { isChannelMismatch, sequenceChannelProblem, stepChannelProblem } from "@/lib/channel-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -65,13 +66,37 @@ async function POST_impl(request: Request) {
     // A step may name no template or a real one; anything else is a 400, not
     // a skip. Silently ignoring a `templateId: 42` would write a step whose
     // caller believes it has a template, and passing it to Prisma answers with
-    // a validation error — a 500 for a wrong type.
+    // a validation error — a 500 for a wrong type. The row is read with the
+    // two columns that decide whether its copy fits this step, so the same
+    // lookup answers both "does it exist" and "is it for this channel".
+    let tpl: { name: string; channel: string } | null = null;
     if (step.templateId) {
-      const tpl = await prisma.template.findUnique({ where: { id: step.templateId } });
-      if (!tpl) return NextResponse.json({ error: `stepsConfig[${i}]: template not found` }, { status: 400 });
-      if (tpl.workspaceId !== workspaceId) {
+      const found = await prisma.template.findUnique({
+        where: { id: step.templateId },
+        select: { name: true, channel: true, workspaceId: true },
+      });
+      if (!found) return NextResponse.json({ error: `stepsConfig[${i}]: template not found` }, { status: 400 });
+      if (found.workspaceId !== workspaceId) {
         return NextResponse.json({ error: `stepsConfig[${i}]: template belongs to another workspace` }, { status: 403 });
       }
+      tpl = found;
+    }
+
+    // `SequenceStep.channel` picks the sender and `Template.channel` describes
+    // the copy, and each door only ever checked its own value against its own
+    // vocabulary, so nothing compared the pair. The engine then takes the body
+    // from the template and the subject only from an EMAIL step, so an EMAIL
+    // step on a LinkedIn template mails "New message" and a WHATSAPP step on an
+    // email sends its HTML as one bubble.
+    if (tpl && isChannelMismatch(step, tpl)) {
+      return NextResponse.json({ error: `stepsConfig[${i}]: ${stepChannelProblem(step, tpl)}` }, { status: 400 });
+    }
+
+    // A sequence's declared `channel` is what the daily rollup groups its sends
+    // by, so it is a claim about the steps beneath it and is checked as one.
+    const mismatch = sequenceChannelProblem(input.data.channel, step);
+    if (mismatch) {
+      return NextResponse.json({ error: `stepsConfig[${i}]: ${mismatch}` }, { status: 400 });
     }
 
     // Conditions are free-form JSON until this point, and the engine reads

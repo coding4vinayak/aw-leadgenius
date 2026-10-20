@@ -1,6 +1,13 @@
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "./db";
 import { processSequenceStep } from "./sequence-engine";
+import { refreshAllReputations, reputationRefreshDue } from "./reputation";
+
+// The throttle's memory. Deliberately process-local and starting empty: a
+// boot runs one immediate pass, which is redundant work, never a wrong
+// answer — a persisted timestamp would need a table this round has no reason
+// to add.
+let lastReputationRefresh: Date | null = null;
 
 /**
  * How many enrollments one tick of the sweep spends. A bound, not a tuning
@@ -59,6 +66,24 @@ export function sequenceDueWhere(now: Date): Prisma.EnrollmentWhereInput {
  * the retry that a sender which is simply missing needs a human to fix.
  */
 export async function runDueSequenceSteps(now: Date = new Date(), take: number = SEQUENCE_SWEEP_BATCH): Promise<number> {
+  // The throttled calendar pass over the reputation ledger. Events (the send
+  // worker's flip, the provider webhooks' relabels) keep an ACTIVE account's
+  // score fresh between passes, but a gated account sends nothing and
+  // therefore sees no events: without a pass on the calendar, its bad 14 days
+  // could never age out and the floor would be a permanent kill rather than a
+  // window. Batched into one aggregate, isolated like every other side of the
+  // tick — a reputation failure must not hold the cadence hostage, and the
+  // throttle lives HERE because the sweep has no persisted job history to
+  // consult.
+  if (reputationRefreshDue(now, lastReputationRefresh)) {
+    lastReputationRefresh = now;
+    try {
+      await refreshAllReputations(now);
+    } catch (error) {
+      console.error("[sequence] reputation refresh pass failed:", error);
+    }
+  }
+
   const due = await prisma.enrollment.findMany({
     where: sequenceDueWhere(now),
     select: { id: true },

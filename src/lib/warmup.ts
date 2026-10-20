@@ -21,11 +21,31 @@ export function warmupDailyLimit(dailyLimit: number, warmupEnabled: boolean, war
 }
 
 /**
+ * The cap's ledger: every message the day committed, until midnight rolls it
+ * out. A row is spent the moment it is created — `QUEUED` means a send job is
+ * already holding it, and counting only what the worker has finished letting
+ * one due-sweep tick mint six "5/day" emails while their rows sat in flight.
+ * A relabeled row is spent too: `BOUNCED`, `COMPLAINED`, `UNSUBSCRIBED`,
+ * `DELIVERED` all say an SMTP conversation completed, and a bounce that freed
+ * capacity for the next email would reward precisely the traffic the ramp
+ * exists to throttle. `FAILED` alone gives the day back — the message never
+ * left the account.
+ */
+export function capSpendTodayWhere(accountId: string, now: Date): { sendingAccountId: string; createdAt: { gte: Date; lt: Date }; NOT: { status: string } } {
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(startOfDay);
+  endOfDay.setDate(endOfDay.getDate() + 1);
+  return { sendingAccountId: accountId, createdAt: { gte: startOfDay, lt: endOfDay }, NOT: { status: "FAILED" } };
+}
+
+/**
  * One warmup pass — what the nightly per-account scheduler and the route's
  * `?action=warmup` tick. The pass advances the stage and nothing else; the
  * raised cap for the next day (`warmupDailyLimit`) is its whole product.
- * Reputation still gates real sends at selection (`reputation > 50`); a pass
- * is a calendar, not a sender.
+ * Reputation still gates real sends at selection (the `REPUTATION_FLOOR`
+ * comparison in `sequence-engine.ts`, on the score `./reputation` derives from
+ * the ledger); a pass is a calendar, not a sender.
  *
  * Passes used to *write messages*: "just checking in" `SentMessage` rows
  * addressed to the workspace's own contacts, `QUEUED` in a state nothing ever

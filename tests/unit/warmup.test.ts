@@ -71,7 +71,7 @@ describe("the sender gate enforces the ramp", () => {
     const gate = /async function selectSendingAccount\([\s\S]*?\n\}/.exec(engineModule)?.[0] ?? "";
     assert.ok(gate, "selectSendingAccount is defined");
     assert.match(gate, /warmupDailyLimit\(/);
-    assert.match(engineModule, /import \{ warmupDailyLimit \} from "\.\/warmup"/);
+    assert.match(engineModule, /import \{[^}]*\bwarmupDailyLimit\b[^}]*\} from "\.\/warmup"/);
     assert.doesNotMatch(gate, /health\.dailySent < account\.dailyLimit/);
   });
 

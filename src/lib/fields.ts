@@ -163,6 +163,11 @@ export const ENROLLMENT_CREATE = {
   contactId: { kind: "text", required: true, max: 32 },
   sequenceId: { kind: "text", required: true, max: 32 },
   campaignId: { kind: "text", max: 32 },
+  // The merge values this prospect's sends fill for the tokens the contact row
+  // cannot: `normalizeMergeValues` decides the shape, `unfilledMergeTokens`
+  // decides whether the sequence's declarations are kept. `objectOnly` because
+  // an array here would be an indexed list of things to merge into nobody.
+  metadata: { kind: "json", objectOnly: true, max: 16384 },
 } satisfies Schema;
 
 export const ABTEST_CREATE = {
@@ -195,12 +200,18 @@ export const ABTEST_PATCH = {
 } satisfies Schema;
 
 /**
- * The only field `PATCH /api/enrollments/:id` has ever taken. `nextActionAt`
- * and `currentStep` are the engine's, not the caller's: a client that moves an
- * enrollment to step 4 also skips the three messages that would have run.
+ * `status` is the vocabulary this route has always policed, and `metadata` is
+ * the door this round opened: a merge value that was wrong — a meeting moved,
+ * a seat count that is really zero — is fixed here, before the next step reads
+ * it. `status` no longer has to be in the request: forcing a caller to resend
+ * `ACTIVE` to correct a value would also re-enqueue the step the status branch
+ * exists to restart. `nextActionAt` and `currentStep` stay the engine's, not
+ * the caller's: a client that moves an enrollment to step 4 also skips the
+ * three messages that would have run.
  */
 export const ENROLLMENT_PATCH = {
-  status: { kind: "enum", required: true, values: ENROLLMENT_STATUSES },
+  status: { kind: "enum", values: ENROLLMENT_STATUSES },
+  metadata: { kind: "json", objectOnly: true, max: 16384 },
 } satisfies Schema;
 
 /**

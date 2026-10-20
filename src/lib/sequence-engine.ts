@@ -1,7 +1,12 @@
 import { prisma } from "./db";
 import { queues, enqueue } from "./queue";
 import { triggerWebhooks } from "./webhooks";
-import { warmupDailyLimit } from "./warmup";
+import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
+import { REPUTATION_FLOOR } from "./reputation";
+import { MERGEABLE_COLUMNS } from "./template-vars";
+import { effectiveTemplateId } from "./merge-promise";
+import { isChannelMismatch, stepChannelProblem } from "./channel-fit";
+import { sendSubjectProblem } from "./subject-fit";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -12,6 +17,7 @@ export interface SequenceStepConfig {
   conditions?: {
     if?: "no_reply" | "no_open" | "no_click" | "replied" | "bounced" | "clicked";
     then?: "next" | "skip" | "end" | "branch";
+    elseThen?: "next" | "skip" | "end";
     branchToStep?: number;
   };
 }
@@ -45,6 +51,128 @@ export function stepIsDue(nextActionAt: Date | null, now: Date): boolean {
   return nextActionAt === null || nextActionAt.getTime() <= now.getTime();
 }
 
+/**
+ * Which enrollment status stops a sequence whose contact left ACTIVE, or null
+ * to let it run.
+ *
+ * Bounced and unsubscribed map to their identical enrollment statuses — the
+ * same rows the provider webhooks write when the bounce or the unsubscribe
+ * arrives live, so a manually-marked contact stops the sequence the same way
+ * the signal does. `DO_NOT_CONTACT` pauses rather than completes: no status in
+ * the enrollment's vocabulary honestly says "this workspace told us not to
+ * contact this person", and `COMPLETED` would fire the CRM's
+ * `sequence.completed` signal on a refusal.
+ */
+export function stopStatusForContact(contactStatus: string): "BOUNCED" | "UNSUBSCRIBED" | "PAUSED" | null {
+  switch (contactStatus) {
+    case "ACTIVE": return null;
+    case "BOUNCED": return "BOUNCED";
+    case "UNSUBSCRIBED": return "UNSUBSCRIBED";
+    default: return "PAUSED";
+  }
+}
+
+/** The provider signals that mean the address itself is dead to outreach. */
+export type ProviderSignal = "BOUNCED" | "COMPLAINED" | "UNSUBSCRIBED";
+
+/**
+ * What to stamp the contact as when a provider signal arrives, or null to
+ * leave the contact alone.
+ *
+ * Only an ACTIVE contact gets marked: a bounce for an address the operator
+ * already moved to `DO_NOT_CONTACT` must not erase the stronger mark, and a
+ * second signal on an already-marked address adds no information. The email
+ * webhook used to flip the enrollment and leave the contact `ACTIVE` — which
+ * meant the round-13 guard let the same dead address start a brand-new
+ * sequence one click later, and the `unsubscribe` event flipped nothing at
+ * all. This table is what makes `stopStatusForContact`'s claim — that a
+ * manually-marked contact stops the sequence "the same way the signal does" —
+ * literally true, because the signal now writes the same column.
+ */
+export function statusAfterProviderSignal(contactStatus: string, signal: ProviderSignal): "BOUNCED" | "UNSUBSCRIBED" | null {
+  if (contactStatus !== "ACTIVE") return null;
+  return signal === "BOUNCED" ? "BOUNCED" : "UNSUBSCRIBED";
+}
+
+/**
+ * Twilio `failed` codes that name THE RECIPIENT — an invalid number, no
+ * WhatsApp account, a landline, a message the owner blocked — as opposed to
+ * codes that name our sender (21211, 21408), a carrier's bad day (30005,
+ * 30007 "unknown") or Twilio plumbing. A `failed` whose code does not accuse
+ * the address marks nobody: an upstream code this table has never seen
+ * defaults to NOT killing a contact, because guessing is the wrong bias.
+ */
+const RECIPIENT_NAMED_FAILURE_CODES = new Set([21601, 21602, 21612, 21614, 30004, 30006, 30008]);
+
+/**
+ * The Twilio delivery-status callback's lifecycle reading: which `MessageStatus`
+ * + `ErrorCode` pair is this channel's bounce, and which is silence.
+ *
+ * `undelivered` is Twilio's own word for "the number could not receive it",
+ * so it needs no code. `queued`/`sent`/`delivered`/`reading`/`received` are
+ * not lifecycle events at all — this round does not invent a DELIVERED
+ * activity for them, it stops dropping the FAILURE half on the floor.
+ * `errorCode` arrives form-encoded, i.e. as a string; both spellings count.
+ */
+export function providerSignalFromDeliveryStatus(status: string, errorCode: unknown): ProviderSignal | null {
+  const normalized = status.toLowerCase();
+  if (normalized === "undelivered") return "BOUNCED";
+  if (normalized === "failed") {
+    const code = typeof errorCode === "number" ? errorCode : Number(errorCode);
+    return RECIPIENT_NAMED_FAILURE_CODES.has(code) ? "BOUNCED" : null;
+  }
+  return null;
+}
+
+/**
+ * Which delivery-status values are engagement, and which is silence.
+ *
+ * `delivered` and `read`/`reading` are the provider telling us the person got
+ * the message (and looked at it) — facts the `no_open` step condition and the
+ * attribution fold already know how to use, because `hasOpen` and the counter
+ * walk are keyed on the Activity row, not the channel. Before this, the only
+ * WhatsApp rows in that fold were the self-recorded SENT, so a multichannel
+ * sequence could never show an open — and a follow-up guarded `no_open` would
+ * nag someone reading their phone two feet away. `queued`/`sent` corroborate
+ * the send we already recorded, not an engagement fact; the failure statuses
+ * are `providerSignalFromDeliveryStatus`'s business, never this table's.
+ */
+export function engagementActivityFromDeliveryStatus(status: string): "DELIVERED" | "OPENED" | null {
+  const normalized = status.toLowerCase();
+  if (normalized === "delivered") return "DELIVERED";
+  if (normalized === "read" || normalized === "reading") return "OPENED";
+  return null;
+}
+
+/**
+ * What a send-time rejection means, per channel.
+ *
+ * Email and WhatsApp can be corrected later by a provider webhook — a bounce
+ * that posts back, a delivery status. LinkedIn's messaging API has no feedback
+ * loop: the response to the POST is the only words this channel will ever
+ * give, and until here the worker read them, stamped the row `FAILED`, and
+ * stopped — so a contact with no LinkedIn URL failed every LinkedIn step of
+ * every campaign forever, stayed ACTIVE to the enroll guard, and the sequence
+ * walked on as if the person were reachable.
+ *
+ * Only recipient-named rejections speak. The channel function's own two
+ * deterministic reasons (no address, an address that resolves to no member)
+ * and a provider 400/404 that says the word `recipient`. A 401/403 names our
+ * token, a 429 names the rate limiter, a 5xx names the day — none of them
+ * accuses the person, and an error this table has never seen marks nobody
+ * dead: the same "guessed nothing" discipline `providerSignalFromDeliveryStatus`
+ * ships with. `null` means the row keeps the failure and nothing else moves —
+ * a transient rejection of one message is not a verdict on the contact.
+ */
+export function sendFailureDisposition(channel: string, error: string | null | undefined): ProviderSignal | null {
+  const text = (error ?? "").toLowerCase();
+  if (channel === "LINKEDIN") {
+    if (text === "contact has no linkedin url" || text === "could not resolve linkedin member urn") return "BOUNCED";
+    if (/^linkedin api error (400|404): /u.test(text) && text.includes("recipient")) return "BOUNCED";
+  }
+  return null;
+}
+
 export async function processSequenceStep(
   enrollmentId: string,
   triggerType: SequenceTrigger,
@@ -61,6 +189,16 @@ export async function processSequenceStep(
   });
 
   if (!enrollment || enrollment.status !== "ACTIVE") return;
+
+  // A contact who left ACTIVE mid-flight does not get the next email: the
+  // workspace's lifecycle column is a stop signal, not metadata. The enroll
+  // route refuses at the boundary; this catches the status that changed
+  // between two ticks of the sweep.
+  const stop = stopStatusForContact(enrollment.contact.status);
+  if (stop) {
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { status: stop } });
+    return;
+  }
 
   const steps = enrollment.sequence.steps as unknown as SequenceStepConfig[];
   const currentStep = steps[enrollment.currentStep];
@@ -150,6 +288,15 @@ export type StepOutcome =
 export const STEP_CONDITIONS = ["no_reply", "no_open", "no_click", "replied", "bounced", "clicked"] as const;
 /** What a satisfied condition does. `next` is the default and the historical behavior. */
 export const STEP_ACTIONS = ["next", "skip", "end", "branch"] as const;
+/**
+ * What an unsatisfied `no_*` condition does instead of waiting. The else has
+ * no `branch`: a second `branchToStep` vocabulary for one more direction is a
+ * bigger surface than the `next`/`skip`/`end` that actually express "send the
+ * step after all", "step past it" and "stop the run".
+ */
+export const STEP_ELSE_ACTIONS = ["next", "skip", "end"] as const;
+/** The conditions the calendar evaluates — the only ones with an else. */
+export const WAIT_CONDITIONS = ["no_reply", "no_open", "no_click"] as const;
 
 export type StepFacts = {
   /** Whether the step's recorded wait has ended (`stepIsDue`). */
@@ -173,6 +320,14 @@ export type StepFacts = {
  * `branch` never branched, and an unknown `if` fell into a `default: return
  * true` that spent the step on the next trigger of any kind. The README sells
  * "branch conditions"; these four actions are that sentence made true.
+ *
+ * `elseThen` is the second half of that sentence. An unsatisfied wait-condition
+ * used to mean `wait` forever: `{if: "no_open", then: "end"}` ended the unread
+ * and PARKED the opened — no follow-up, no advance, the enrollment sitting
+ * ACTIVE with an overdue clock and nothing telling anyone. "Nudge the readers,
+ * end the unread" was inexpressible; now the satisfied branch runs `then`, the
+ * unsatisfied one runs `elseThen` where defined, and the calendar still owns
+ * the moment: only the sweep's `TIME_ELAPSED` consults the else.
  */
 export function stepOutcome(step: SequenceStepConfig, triggerType: SequenceTrigger, facts: StepFacts): StepOutcome {
   if (!step.conditions) {
@@ -192,7 +347,24 @@ export function stepOutcome(step: SequenceStepConfig, triggerType: SequenceTrigg
         throw new Error(`step ${step.stepNumber} has unknown condition "${String(conditions.if)}" (allowed: ${STEP_CONDITIONS.join(", ")})`);
     }
   })();
-  if (!satisfied) return { kind: "wait" };
+  if (!satisfied) {
+    // The else is consulted only on the tick where a wait-condition could have
+    // been satisfied — `TIME_ELAPSED`, the sweep arriving at a due step. An
+    // event trigger consulting it would spend the step ahead of its calendar,
+    // unmaking `delayDays`: a read receipt arriving the evening after the
+    // intro must not send tomorrow's nudge tonight. No `elseThen` means wait,
+    // exactly the behavior every configuration had before this field existed.
+    if (conditions.elseThen !== undefined && triggerType === "TIME_ELAPSED") {
+      switch (conditions.elseThen) {
+        case "next": return { kind: "send" };
+        case "skip": return { kind: "skip" };
+        case "end": return { kind: "end" };
+        default:
+          throw new Error(`step ${step.stepNumber} has unknown elseThen "${String(conditions.elseThen)}" (allowed: ${STEP_ELSE_ACTIONS.join(", ")})`);
+      }
+    }
+    return { kind: "wait" };
+  }
 
   switch (conditions.then ?? "next") {
     case "next": return { kind: "send" };
@@ -224,12 +396,23 @@ export function conditionProblem(
   if (conditions === undefined || conditions === null) return null;
   if (typeof conditions !== "object" || Array.isArray(conditions)) return "conditions must be an object";
 
-  const { if: condition, then: action, branchToStep } = conditions as Record<string, unknown>;
+  const { if: condition, then: action, elseThen: elseAction, branchToStep } = conditions as Record<string, unknown>;
   if (typeof condition !== "string" || !(STEP_CONDITIONS as readonly string[]).includes(condition)) {
     return `conditions.if must be one of ${STEP_CONDITIONS.join(", ")}`;
   }
   if (action !== undefined && (typeof action !== "string" || !(STEP_ACTIONS as readonly string[]).includes(action))) {
     return `conditions.then must be one of ${STEP_ACTIONS.join(", ")}`;
+  }
+  if (elseAction !== undefined) {
+    if (typeof elseAction !== "string" || !(STEP_ELSE_ACTIONS as readonly string[]).includes(elseAction)) {
+      return `conditions.elseThen must be one of ${STEP_ELSE_ACTIONS.join(", ")}`;
+    }
+    // The else of `replied`/`bounced`/`clicked` would be "this event did not
+    // just happen", which is true of every other trigger and fires the step on
+    // the first one. Only the calendar-evaluated conditions have an else.
+    if (!(WAIT_CONDITIONS as readonly string[]).includes(condition)) {
+      return `conditions.elseThen only applies to the wait conditions (${WAIT_CONDITIONS.join(", ")}); an event condition has no else worth running`;
+    }
   }
   if (branchToStep !== undefined || action === "branch") {
     if (action !== "branch") return 'conditions.branchToStep only applies when conditions.then is "branch"';
@@ -266,10 +449,12 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
   // A variant's template overrides the step's for every step of the arm —
   // that is the division of labour the two fields state: `sequenceId` sends a
   // different track, `templateId` sends different copy down the same one.
+  // The rule lives in `./merge-promise` because the enrollment doors answer the
+  // same question before a row exists: which copy will this step actually send.
   // An arm template that no longer resolves refuses the send instead of
   // falling back: handing the arm the control's copy would silently convert
   // its cohort, and the test would then compare a message nobody was sent.
-  const templateId = enrollment.abVariant?.templateId ?? step.templateId;
+  const templateId = effectiveTemplateId(enrollment.abVariant?.templateId, step.templateId);
   const template = templateId ? await prisma.template.findUnique({ where: { id: templateId } }) : null;
   if (enrollment.abVariant?.templateId && !template) {
     throw new Error(`arm "${enrollment.abVariant.name}" points at a template that no longer exists — fix the arm or pause the test before this step can send`);
@@ -281,6 +466,33 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
   // subject to a real prospect.
   if (templateId && !template) {
     throw new Error(`step ${step.stepNumber} points at a template that no longer exists — attach a new template before it can send`);
+  }
+  // The other half of the same residue: `step.channel` picks the sender and
+  // `template.channel` describes the copy, and the doors now refuse a step that
+  // pairs them wrongly (#25), so this is what remains for the rows a migration or
+  // a direct edit left already mismatched. It has to be here rather than only at
+  // the doors, because the harm is the one thing a prospect reads — an EMAIL step
+  // on a non-email template has no subject column to render and `sendEmail` titles
+  // the mail "New message". Judged on the copy the send will actually use, so an
+  // arm template riding an email track is caught by the same comparison (#24).
+  //
+  // The sequence's declared `channel` is deliberately NOT checked here: that claim
+  // is about the heading the daily rollup files the message under, and refusing a
+  // real message over a reporting label would trade a wrong number for no number.
+  if (template && isChannelMismatch(step, template)) {
+    throw new Error(stepChannelProblem(step, template));
+  }
+  // The pair can agree and still be the second half of #25's own sentence: an
+  // EMAIL step on an EMAIL template whose `subject` column is empty. `sendEmail`
+  // sends `msg.subject || "New message"`, so the prospect reads a subject nobody
+  // wrote, which is why the doors now refuse such a row (#26) — and why the send
+  // refuses it too, for the templates written before the rule. Only the email
+  // half is asked here: a chat template that carries a subject holds the author's
+  // dead copy, and refusing a message that would arrive complete in order to
+  // complain about a column no carrier reads is the wrong trade.
+  if (template) {
+    const subjectGap = sendSubjectProblem(step, template);
+    if (subjectGap) throw new Error(subjectGap);
   }
 
   const messageBody = template ? renderTemplate(template.body, enrollment.contact, enrollment.metadata) : `Step ${step.stepNumber}`;
@@ -320,18 +532,36 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
 }
 
 async function selectSendingAccount(workspaceId: string, channel: string) {
+  // The two routes that own `isDefault` have always kept exactly one default
+  // per workspace+channel, and the schema even indexes the column for a
+  // lookup this function never made: the flag decided nothing about who sent.
+  // Ordering it first makes it mean what the index implies — the default is
+  // tried before its siblings — while the same two tests judge it: priority,
+  // not exemption. A default that has spent its cap or fallen through the
+  // reputation floor steps aside and the best remaining account carries, so
+  // "the deliverability engine protects the domain" stays true of the sender
+  // the operator chose by name.
   const accounts = await prisma.sendingAccount.findMany({
     where: { workspaceId, channel, isActive: true },
-    orderBy: { reputationScore: "desc" },
+    orderBy: [{ isDefault: "desc" }, { reputationScore: "desc" }],
   });
 
   for (const account of accounts) {
-    const health = await getEmailAccountHealth(account.id);
     // The warmup ramp is a send cap, not a label: while warmup is on, the
     // account's limit for the day is `warmupDailyLimit` (stage 0 → 5/day,
-    // +5 per nightly pass, its own dailyLimit once warmed).
+    // +5 per nightly pass, its own dailyLimit once warmed). The ledger is
+    // `capSpendTodayWhere`: rows the worker has not picked up yet count, and
+    // rows the provider later relabels (a bounce, a complaint) keep counting —
+    // only a dispatch `FAILED` gives the day back.
     const cap = warmupDailyLimit(account.dailyLimit, account.warmupEnabled, account.warmupStage);
-    if (health.dailySent < cap && health.reputation > 50) {
+    const spent = await prisma.sentMessage.count({ where: capSpendTodayWhere(account.id, new Date()) });
+    // The floor is a number the ledger can now push an account below:
+    // `reputationScore` is recomputed from the rolling deliverability window
+    // on every event that changes it (see ./reputation). Before this round
+    // nothing ever wrote the column, so this comparison sat against a frozen
+    // 100 and the "reputation floors" the README sells could not refuse
+    // anything.
+    if (spent < cap && account.reputationScore > REPUTATION_FLOOR) {
       return account;
     }
   }
@@ -350,14 +580,32 @@ async function hasClick(enrollmentId: string): Promise<boolean> {
   return prisma.activity.findFirst({ where: { enrollmentId, type: "CLICKED" } }).then(Boolean);
 }
 
-function renderTemplate(template: string, contact: any, metadata?: any): string {
-  return template
-    .replace(/\{\{firstName\}\}/g, contact.firstName || "")
-    .replace(/\{\{lastName\}\}/g, contact.lastName || "")
-    .replace(/\{\{company\}\}/g, contact.company || "")
-    .replace(/\{\{title\}\}/g, contact.title || "")
-    .replace(/\{\{email\}\}/g, contact.email || "")
-    .replace(/\{\{(\w+)\}\}/g, (_, key) => metadata?.[key] || "");
+/**
+ * The merge engine. Exported because the vocabulary it implements is now a
+ * promise two routes check, and the `0`-renders-`0` rule below is worth an
+ * answer rather than a source guard.
+ */
+export function renderTemplate(template: string, contact: any, metadata?: any): string {
+  // The five column substitutions are not five literal lines anymore — they
+  // iterate `MERGEABLE_COLUMNS`, the same list `./template-vars` checks
+  // declarations against. What the send fills and what the boundary promises
+  // can no longer be two tables that drift.
+  let out = template;
+  for (const column of MERGEABLE_COLUMNS) {
+    // A callback, like the metadata catch-all below: as a string replacement,
+    // a contact whose company is "$&" would expand the `$` pattern instead of
+    // landing verbatim in the prospect's email.
+    out = out.replace(new RegExp(`\\{\\{${column}\\}\\}`, "g"), () => contact?.[column] || "");
+  }
+  // The catch-all is the half of the vocabulary `./template-vars` cannot fill
+  // from the contact row, so it is the half the enrollment's metadata answers —
+  // and the stringification is deliberate: a merge value of `0` or `false` is
+  // an answer a prospect should read, which the old `|| ""` mailed as a blank.
+  // An absent name and a stored null still merge to nothing.
+  return out.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    const value = metadata?.[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
 }
 
 function calculateNextAction(step: SequenceStepConfig): Date {
@@ -394,21 +642,4 @@ async function completeEnrollment(enrollment: {
     sequenceId: enrollment.sequenceId,
     completedAt: completedAt.toISOString(),
   });
-}
-
-// Warmup logic
-async function getEmailAccountHealth(accountId: string) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  const [sent, bounced] = await Promise.all([
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "SENT" } }),
-    prisma.sentMessage.count({ where: { sendingAccountId: accountId, createdAt: { gte: today, lt: tomorrow }, status: "BOUNCED" } }),
-  ]);
-
-  const account = await prisma.sendingAccount.findUnique({ where: { id: accountId }, select: { reputationScore: true } });
-
-  return { reputation: account?.reputationScore || 100, dailySent: sent, bounces: bounced, complaints: 0 };
 }

@@ -183,7 +183,7 @@ describe("the sequence engine renders the arm's template, not a silent fallback"
   // over the step's, and the persisted message must record the template it was
   // actually rendered from — the audit row cannot cite the step's copy.
   it("the arm template overrides the step template and is the one recorded", () => {
-    assert.match(engine, /const templateId = enrollment\.abVariant\?\.templateId \?\? step\.templateId/);
+    assert.match(engine, /const templateId = effectiveTemplateId\(enrollment\.abVariant\?\.templateId, step\.templateId\)/);
     assert.match(engine, /template = templateId \? await prisma\.template\.findUnique/);
     assert.match(engine, /templateId,\n      channel: step\.channel/);
   });
@@ -196,7 +196,11 @@ describe("the sequence engine renders the arm's template, not a silent fallback"
   });
 
   it("an arm without a template still renders the step's", () => {
-    assert.match(engine, /\?\? step\.templateId/);
+    // The fallback is the whole rule: an arm that declares no copy must send the
+    // sequence's own, not nothing. It lives in the shared resolver now, because
+    // the enrollment doors ask that step the same question the engine answers.
+    assert.match(engine, /effectiveTemplateId\(enrollment\.abVariant\?\.templateId, step\.templateId\)/);
+    assert.doesNotMatch(engine, /\?\? step\.templateId/);
     assert.doesNotMatch(engine, /templateId = enrollment\.abVariant\?\.templateId \|\| step\.templateId/);
   });
 });
