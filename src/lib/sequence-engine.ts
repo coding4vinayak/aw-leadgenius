@@ -3,6 +3,7 @@ import { queues, enqueue } from "./queue";
 import { triggerWebhooks } from "./webhooks";
 import { warmupDailyLimit, capSpendTodayWhere } from "./warmup";
 import { REPUTATION_FLOOR } from "./reputation";
+import { MERGEABLE_COLUMNS } from "./template-vars";
 
 export interface SequenceStepConfig {
   stepNumber: number;
@@ -548,13 +549,18 @@ async function hasClick(enrollmentId: string): Promise<boolean> {
 }
 
 function renderTemplate(template: string, contact: any, metadata?: any): string {
-  return template
-    .replace(/\{\{firstName\}\}/g, contact.firstName || "")
-    .replace(/\{\{lastName\}\}/g, contact.lastName || "")
-    .replace(/\{\{company\}\}/g, contact.company || "")
-    .replace(/\{\{title\}\}/g, contact.title || "")
-    .replace(/\{\{email\}\}/g, contact.email || "")
-    .replace(/\{\{(\w+)\}\}/g, (_, key) => metadata?.[key] || "");
+  // The five column substitutions are not five literal lines anymore — they
+  // iterate `MERGEABLE_COLUMNS`, the same list `./template-vars` checks
+  // declarations against. What the send fills and what the boundary promises
+  // can no longer be two tables that drift.
+  let out = template;
+  for (const column of MERGEABLE_COLUMNS) {
+    // A callback, like the metadata catch-all below: as a string replacement,
+    // a contact whose company is "$&" would expand the `$` pattern instead of
+    // landing verbatim in the prospect's email.
+    out = out.replace(new RegExp(`\\{\\{${column}\\}\\}`, "g"), () => contact?.[column] || "");
+  }
+  return out.replace(/\{\{(\w+)\}\}/g, (_, key) => metadata?.[key] || "");
 }
 
 function calculateNextAction(step: SequenceStepConfig): Date {

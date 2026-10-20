@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { withAuth, authedWorkspaceId } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
-import { validateBody } from "@/lib/validate";
+import { validateBody, fieldProblem } from "@/lib/validate";
 import { TEMPLATE_CREATE } from "@/lib/fields";
+import { normalizeVariableDeclaration, checkTemplateVariables } from "@/lib/template-vars";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,19 @@ async function POST_impl(request: Request) {
   // Prisma stack naming the one field they had actually left out.
   const input = validateBody(requestBody, TEMPLATE_CREATE);
   if (!input.ok) return input.error;
+
+  // The `variables` column was written by this spread and read by nothing: a
+  // declaration of `["firstNane"]` was a clean 201 whose typo surfaced as a
+  // blank in a prospect's email. It is now normalised to the one shape the
+  // renderer can match and checked against the text it claims to describe,
+  // so a stored declaration can only ever be a promise the send keeps.
+  if ("variables" in input.data && input.data.variables !== undefined && input.data.variables !== null) {
+    const declared = normalizeVariableDeclaration(input.data.variables);
+    if (!declared.ok) return fieldProblem("variables", declared.error);
+    input.data.variables = declared.names;
+    const problems = checkTemplateVariables(declared.names, [input.data.subject, input.data.body]);
+    if (problems.length) return fieldProblem("variables", problems.join("; "));
+  }
 
   const template = await prisma.template.create({ data: { workspaceId, ...input.data } });
   return NextResponse.json(template, { status: 201 });

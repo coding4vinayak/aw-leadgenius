@@ -312,6 +312,14 @@ purpose: both references are optional foreign keys whose database action is
 see it — the arm would fall back to the step's copy and silently convert its
 cohort, and a step would send placeholder copy no one chose.
 
+A template's `variables` declaration is checked against its own text at both
+write doors. The renderer fills `{{firstName}}`-style tokens from the contact
+row — the five columns it iterates are the same exported list the boundary
+knows — and anything else from the enrollment's metadata. Declaring a name no
+text contains, or writing a token no declaration covers, answers 400 naming the
+mismatch; an *empty* declaration stays silent, because a template whose author
+never made a promise has none to break.
+
 `PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
 RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
 only RUNNING tests, and enrollments made while paused join no cohort (that is
