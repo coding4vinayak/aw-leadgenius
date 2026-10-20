@@ -239,7 +239,12 @@ the ledger — the send worker's flip, the provider webhooks' relabels — and
 by a throttled pass the minute-sweep carries, so an account the floor has
 gated out can age back in on the calendar with no new sends at all. The
 health panel counts through the same window: its `reputation` and its
-sent/bounced/complained readings come from one ledger, not two.
+sent/bounced/complained readings come from one ledger, not two. Selection
+order says who is *tried* first, not who is exempt: the account the operator
+flagged `isDefault` (the routes keep exactly one per channel, and the column
+has long had its index) rides before its siblings — until the same cap and
+floor judge it, at which point the best remaining account carries and the
+default waits for its day back.
 
 ## Attribution (read-only)
 

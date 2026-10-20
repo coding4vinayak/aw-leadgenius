@@ -499,9 +499,18 @@ async function executeStep(enrollment: StepEnrollment, step: SequenceStepConfig,
 }
 
 async function selectSendingAccount(workspaceId: string, channel: string) {
+  // The two routes that own `isDefault` have always kept exactly one default
+  // per workspace+channel, and the schema even indexes the column for a
+  // lookup this function never made: the flag decided nothing about who sent.
+  // Ordering it first makes it mean what the index implies — the default is
+  // tried before its siblings — while the same two tests judge it: priority,
+  // not exemption. A default that has spent its cap or fallen through the
+  // reputation floor steps aside and the best remaining account carries, so
+  // "the deliverability engine protects the domain" stays true of the sender
+  // the operator chose by name.
   const accounts = await prisma.sendingAccount.findMany({
     where: { workspaceId, channel, isActive: true },
-    orderBy: { reputationScore: "desc" },
+    orderBy: [{ isDefault: "desc" }, { reputationScore: "desc" }],
   });
 
   for (const account of accounts) {
