@@ -211,7 +211,7 @@ describe("PATCH /api/abtests/:id keeps the pause the errors promise", () => {
   it("owns the row through the key's workspace, then validates on the declared table", () => {
     assert.match(
       patch,
-      /const owned = await prisma\.aBTest\.findUnique\(\{\s*where: \{ id \},\s*select: \{[^}]*startedAt: true,\s*variants: \{ select: \{ id: true, name: true, isControl: true \} \}/,
+      /const owned = await prisma\.aBTest\.findUnique\(\{\s*where: \{ id \},\s*select: \{[^}]*startedAt: true,\s*variants: \{ select: \{ id: true, name: true, weight: true, isControl: true \} \}/,
     );
     assert.match(patch, /await assertOwns\(request, owned\.workspaceId\)/);
     assert.match(patch, /validateBody\(body, ABTEST_PATCH, \{ requireWrite: true \}\)/);

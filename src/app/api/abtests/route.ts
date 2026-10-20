@@ -5,6 +5,7 @@ import { validateBody, validateItems } from "@/lib/validate";
 import { ABTEST_CREATE, ABTEST_VARIANT } from "@/lib/fields";
 import { validateAbTestSemantics, type AbTestVariantInput } from "@/lib/abtest";
 import { armChannelProblem } from "@/lib/channel-fit";
+import { declareSplit } from "@/lib/traffic-split";
 
 export const dynamic = "force-dynamic";
 
@@ -85,7 +86,9 @@ async function POST_impl(request: Request) {
       hypothesis,
       status: "RUNNING",
       startedAt: new Date(),
-      trafficSplit: Object.fromEntries(variants.map((v) => [v.name, v.weight])),
+      // The copy the completion door is later asked to believe, written through
+      // the same function that reads it: the column is the arms, keyed by name.
+      trafficSplit: declareSplit(variants),
       variants: {
         create: variants.map((v) => ({
           name: v.name,

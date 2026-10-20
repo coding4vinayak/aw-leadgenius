@@ -192,10 +192,13 @@ POST   /api/enrollments                    # enroll a contact — only an ACTIVE
 GET    /api/analytics/{workspaceId}?type=overview|campaign|sequence|daily|attribution
 POST   /api/abtests                        # create a running A/B test (2..10
                                            # variants, one control, weights sum
-                                           # 100); the next enroll assigns arms
+                                           # 100); the next enroll assigns arms,
+                                           # and trafficSplit is copied from them
 PATCH  /api/abtests/{id}                   # pause, resume, or complete (naming
                                            # a winner stamps its confidence —
-                                           # two-proportion z; COMPLETED terminal)
+                                           # two-proportion z — and refuses a
+                                           # split that is not its arms or not
+                                           # its cohorts; COMPLETED terminal)
 POST   /api/webhooks                       # subscribe; deliverable events are
                                            # the three the product emits
                                            # (see *Webhooks (outbound)*)
@@ -440,6 +443,60 @@ and a subjectless email template is already refused at its own door. A track
 pointing at one that predates the rule is caught by the send guard above, and
 `POST /api/enrollments` reports it in `warning` the way it reports every
 first-step refusal.
+
+## What the traffic split declares
+
+`prisma/schema.prisma` carries `ABTest.trafficSplit` as JSON, commented
+`// e.g., {"control": 50, "variant_a": 50}`, and `POST /api/abtests` fills it
+from the variant rows it writes in the same statement — `declareSplit(variants)`,
+`src/lib/traffic-split.ts`, so the writer and the reader below agree on the shape.
+The number therefore lives twice: in that JSON, and in `ABTestVariant.weight`. The
+rows are the operative copy (`assignVariant` buckets with a `% total` modulo over
+the weights; `validateAbTestSemantics` refuses a creation whose weights do not sum
+to 100) while the JSON was believed by nothing in the code — and served to the
+buyer all the same, because `GET /api/campaigns/{id}` includes the whole test rows.
+So the campaign's *reported* split had never been compared with the split the
+campaign runs on. This is #25 and #26's bug class with the second field left out:
+one number, defined twice, one definition unchecked.
+
+The module asks the column the two questions a reader should ask, and
+`PATCH /api/abtests/{id}` asks them when — only when — a winner is named:
+
+- **Does the copy still describe the test?** `declaredSplit` compares the JSON
+  against the arm rows it was copied from, keyed by arm name: a percentage that
+  moved, an arm the copy leaves out, a name no variant answers to, and a column
+  that is not a name→percentage object at all. Each refusal says which arm, both
+  numbers, and that assignment follows the rows.
+- **Did the test deliver the split?** `cohortProblem` compares the declaration
+  against the enrollments that actually landed in each arm, arm against the rest
+  of the traffic: `z = (got − n·p) / sqrt(n·p·(1−p))`, with `p` the arm's weight
+  over the *total* declared weight — the same denominator the bucket uses, so a
+  pass means the assignment delivered the promise rather than that the column
+  adds up to 100.
+
+Both come before the evidence fold, because a verdict resting on an audience that
+is not the one promised is not thin evidence — it is a different test, and that is
+the thing the operator needs to hear first. Neither refuses the *close*: completing
+without a winner is the remedy both messages give and stays available, and a test
+with no cohorts or no winner claims nothing.
+
+Neither half is writable through the API after creation — `ABTEST_CREATE` does not
+list `trafficSplit` (it is derived) and `ABTEST_PATCH` is `status` plus
+`winningVariant` — so a disagreement arrives by hand: a migration, a backfill, an
+operator turning a 50/50 into a canary and back. That is also why the second
+question is asked of the enrollments rather than of the weights: the cohorts a
+lopsided window leaves behind do not heal when the numbers go back.
+
+The alarm line is `|z| ≥ 3.290527`, the two-sided 0.1% point of the standard
+normal, reported in the same z-scale `confidence` stamps its verdict in;
+`tests/unit/traffic-split.test.ts` integrates the density and checks the constant
+rather than trusting it. 0.1% rather than the familiar 5% because the check runs on
+every completion and a campaign runs many tests: at 5% one healthy test in twenty
+would be called broken. And an arm is judged only once **five enrollments are
+expected both in it and in the rest of the traffic** — 3 of 7 on a 50/50 test is
+what a fair coin does, and a module that alarmed on it would be cried wolf by the
+third campaign. A test with a handful of contacts therefore answers nothing, which
+is the honest output rather than a number invented at the review.
 
 ## Contact lifecycle stops outreach
 
