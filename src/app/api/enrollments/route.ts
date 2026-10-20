@@ -3,7 +3,9 @@ import { withAuth, authedWorkspaceId } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { processSequenceStep } from "@/lib/sequence-engine";
 import { assignVariant } from "@/lib/abtest";
-import { validateBody } from "@/lib/validate";
+import { validateBody, fieldProblem } from "@/lib/validate";
+import { normalizeMergeValues, unfilledMergeTokens, type MergeValues } from "@/lib/template-vars";
+import { mergePromisesForSteps } from "@/lib/merge-promise";
 import { ENROLLMENT_CREATE } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -75,7 +77,14 @@ async function POST_impl(request: Request) {
   // *requested* sequence would quietly put a non-comparable contact in the
   // control cohort.
   let armSequenceId = sequenceId;
+  let armTemplateId: string | null | undefined;
   let abVariantId: string | undefined;
+  // The steps whose templates decide what this enrollment must be able to
+  // merge. It starts as the requested sequence's and is replaced below when an
+  // A/B arm overrides it — the promise to check is the one the send will keep,
+  // not the one the caller typed. Ordering is the loader's business: one place
+  // decides which step a promise is named at.
+  let drivingSteps = [...sequence.steps];
   const test = await prisma.aBTest.findFirst({
     where: { campaignId, workspaceId, status: "RUNNING" },
     orderBy: { startedAt: "asc" },
@@ -85,6 +94,13 @@ async function POST_impl(request: Request) {
     const chosen = assignVariant(test.id, contactId, test.variants);
     if (chosen) {
       abVariantId = chosen.id;
+      // An arm's template overrides EVERY step of the track it rides, so it is
+      // a promise the send keeps even when the arm shares this very sequence.
+      // Reading only `step.templateId` here — which is what this door did —
+      // checks the copy that will not be sent and waves through the copy that
+      // will: a variant pointing at a template declaring `{{meetingDate}}`
+      // enrolled clean and mailed the blank to that arm's prospects.
+      armTemplateId = chosen.templateId;
       if (chosen.sequenceId !== sequenceId) {
         const armSequence = await prisma.sequence.findFirst({
           where: { id: chosen.sequenceId, workspaceId },
@@ -97,6 +113,7 @@ async function POST_impl(request: Request) {
           return NextResponse.json({ error: `arm "${chosen.name}" points at a sequence with no steps` }, { status: 409 });
         }
         armSequenceId = chosen.sequenceId;
+        drivingSteps = [...armSequence.steps];
       }
     }
   }
@@ -108,8 +125,33 @@ async function POST_impl(request: Request) {
     return NextResponse.json({ error: "contact is already actively enrolled in this sequence", enrollmentId: existing.id }, { status: 409 });
   }
 
+  // `Enrollment.metadata` is the only source the renderer's catch-all reads for
+  // a merge name the contact row cannot fill. #23 opened the door that writes it
+  // and made the sequence's promise cashable here; this round makes the promise
+  // itself honest — `drivingSteps` and `armTemplateId` are resolved exactly the
+  // way the engine resolves the copy it will send, by the same function, so the
+  // names demanded are the names the mail will need. Every declared, non-column
+  // name must arrive with a value, or the enrollment is refused by the name it
+  // cannot fill.
+  let mergeValues: MergeValues | undefined;
+  if (input.data.metadata !== undefined) {
+    const normalized = normalizeMergeValues(input.data.metadata);
+    if (!normalized.ok) return fieldProblem("metadata", normalized.error);
+    mergeValues = normalized.values;
+  }
+  const unfilled = unfilledMergeTokens(await mergePromisesForSteps(drivingSteps, armTemplateId), mergeValues);
+  if (unfilled.length) return fieldProblem("metadata", unfilled.join("; "));
+
   const enrollment = await prisma.enrollment.create({
-    data: { campaignId, sequenceId: armSequenceId, contactId, status: "ACTIVE", currentStep: 0, ...(abVariantId ? { abVariantId } : {}) },
+    data: {
+      campaignId,
+      sequenceId: armSequenceId,
+      contactId,
+      status: "ACTIVE",
+      currentStep: 0,
+      ...(abVariantId ? { abVariantId } : {}),
+      ...(mergeValues ? { metadata: mergeValues } : {}),
+    },
   });
 
   let warning: string | undefined;

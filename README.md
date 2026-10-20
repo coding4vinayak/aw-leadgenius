@@ -171,7 +171,10 @@ POST   /api/campaigns                      # create (draft)
 GET    /api/campaigns/{id}                 # detail + sequences + enrollments
 PATCH  /api/campaigns/{id}                 # rename, start, pause, complete
 GET    /api/sequences?workspaceId=         # list
-POST   /api/sequences                      # create with steps
+POST   /api/sequences                      # create with steps — each step's
+                                           # channel must fit the channel its
+                                           # template was written for (see
+                                           # *Which channel carries which copy*)
 GET    /api/contacts?workspaceId=          # list
 POST   /api/contacts                       # create, optionally into lists
 GET    /api/contacts/{id}                  # detail
@@ -207,11 +210,44 @@ Sending accounts carry daily limits and reputation scores; the engine skips
 spent or low-reputation accounts rather than burning a domain. Warmup is a
 real send cap, not a countdown: a warming account sends at most 5/day, and
 each nightly pass raises the cap by 5 until the account reaches its own
-daily limit. Bounces and complaints pause the enrollment
+daily limit. The cap counts what the day committed, not what the worker has
+finished reporting: a row is spent the moment it is created — while it sits
+`QUEUED` with its send job in flight, and after a provider receipt relabels
+it `BOUNCED` or `COMPLAINED` — because a bounce that freed capacity for the
+next email would reward exactly the traffic the ramp exists to throttle. Only
+a dispatch `FAILED`, where nothing left the account, gives the day back.
+Bounces and complaints pause the enrollment
 automatically — deliverability is enforced in code, not in a runbook. The
 spacing those guards exist for is enforced too: the waits between steps are
 read back every minute by the `leadgenius-scheduled` sweep (see *Putting it
 somewhere*), so a four-step sequence arrives as four emails on four days.
+
+LinkedIn has no feedback loop — no webhook will ever tell us a prospect
+closed their account — so the send-time rejection is the only words this
+channel will ever give, and it is now read as such. A rejection that names
+the recipient (`Contact has no LinkedIn URL`, an unresolvable member URN, an
+API 400/404 that says *recipient*) writes exactly the lifecycle the email
+bounce webhook writes: a `BOUNCED` activity, a `BOUNCED` enrollment, a
+`BOUNCED` contact the enroll guard then refuses. A rejection that names our
+token (401), the rate limiter (429) or the day (5xx) accuses nobody: the row
+keeps its failure and nothing else moves. The API host is the operator's
+`LINKEDIN_API_BASE`, never a caller-supplied address — the fleet's egress
+guard refuses a `fetch` whose URL the request can move. Reputation is now
+a derived number too: `reputationScore` used to be written by no code path
+at all — every account sat at the schema default of 100, and the gate's
+floor could never refuse anything the copy said it would. The score is the
+account's own deliverability rate over a rolling 14-day window (a spam
+complaint counts triple a bounce), recomputed on every event that changes
+the ledger — the send worker's flip, the provider webhooks' relabels — and
+by a throttled pass the minute-sweep carries, so an account the floor has
+gated out can age back in on the calendar with no new sends at all. The
+health panel counts through the same window: its `reputation` and its
+sent/bounced/complained readings come from one ledger, not two. Selection
+order says who is *tried* first, not who is exempt: the account the operator
+flagged `isDefault` (the routes keep exactly one per channel, and the column
+has long had its index) rides before its siblings — until the same cap and
+floor judge it, at which point the best remaining account carries and the
+default waits for its day back.
 
 ## Attribution (read-only)
 
@@ -279,6 +315,37 @@ purpose: both references are optional foreign keys whose database action is
 see it — the arm would fall back to the step's copy and silently convert its
 cohort, and a step would send placeholder copy no one chose.
 
+A template's `variables` declaration is checked against its own text at both
+write doors. The renderer fills `{{firstName}}`-style tokens from the contact
+row — the five columns it iterates are the same exported list the boundary
+knows — and anything else from the enrollment's metadata. Declaring a name no
+text contains, or writing a token no declaration covers, answers 400 naming the
+mismatch; an *empty* declaration stays silent, because a template whose author
+never made a promise has none to break.
+
+The other half of that vocabulary is `Enrollment.metadata`, and it is now a
+written column, not only a read one. `POST /api/enrollments` takes it and so
+does `PATCH /api/enrollments/{id}` (`status` stopped being required there for
+exactly this reason: a caller fixing one merge value should not have to re-send
+the status whose branch re-enqueues the step). A merge value is text, a number
+or `true`/`false` — nothing nested, no `null`, keys word-shaped because a name
+the renderer's `{{\w+}}` cannot match is dead data. Then every declared name the
+contact row *cannot* fill must arrive with a non-blank value, or the enrollment
+is refused 400 naming the step, the template and the token: `{{seats}}` is a
+promise the send keeps only if someone answered it. `0` and `false` count as
+answers, and the renderer mails them as `0` and `false`. A patch *replaces* the
+object, so it is re-checked the same way — clearing a value the sequence still
+promises is refused, exactly like never sending it.
+
+Both doors ask about the copy the send will *actually* use, not the one the
+caller typed: the shared `effectiveTemplateId(variantTemplateId, stepTemplateId)`
+is what `executeStep` resolves a step's template with and what
+`mergePromisesForSteps` resolves every step with before reading declarations, so
+an arm whose template declares `{{meetingDate}}` is refused at enroll by that
+template's name — the version that used to check only `step.templateId` waved the
+enrollment through and mailed the blank to that arm's cohort. An arm template
+overrides every step, so it is counted as **one** promise, not one per step.
+
 `PATCH /api/abtests/{id}` is the lifecycle the other error messages promise.
 RUNNING ↔ PAUSED stops and restarts arm assignment — the enroll route reads
 only RUNNING tests, and enrollments made while paused join no cohort (that is
@@ -295,6 +362,85 @@ replied *less* than control on its own numbers.
 `DRAFT` is the column's default but not a transition target: nothing reads it,
 nothing wrote it, and "return to before the test existed" is not a lifecycle.
 
+## Which channel carries which copy
+
+Two columns describe one message from opposite ends, and each was policed only
+against its own vocabulary: `Template.channel` says what kind of copy the row is
+(`EMAIL | WHATSAPP | LINKEDIN`) and `SequenceStep.channel` says who carries it
+(those three plus `CALL | TASK`), while nothing compared them. The engine takes
+the body from the template and a subject *only* when the step says `EMAIL`, so an
+email whose copy was written for LinkedIn has no subject to render and
+`sendEmail` titles it **"New message"**; a `WHATSAPP` step on an email template
+sends its HTML as one bubble. `isChannelMismatch(step, template)` is the one rule
+now, asked by every door that can write either half:
+
+- `POST /api/sequences` refuses a step whose template was written for another
+  channel, and refuses a track whose declared `channel` its own steps contradict.
+  `MULTI` is the vocabulary's word for a mixed track and is exempt: that claim is
+  what the daily rollup files every send under (`analytics.ts` groups by
+  `enrollment.sequence.channel`), so a lie there is a wrong *number*, not a wrong
+  message — which is also why the send does not check it.
+- `PATCH /api/sequences/{id}` re-asks the **stored** steps when `channel` changes;
+  the route cannot write a step, so the new claim is judged against the rows that
+  already exist.
+- `POST /api/abtests` judges an arm's template against **every** step of the track
+  it overrides (see *A/B tests* above), naming the first that breaks and how many
+  follow.
+- `PATCH /api/templates/{id}` asks what a `channel` edit would strand — the steps
+  that reference it, the arms whose copy it is — and refuses by name, because a
+  referenced template cannot be deleted, so this is the one edit that changes what
+  a live step sends without the step being touched. Patching the channel a
+  template already carries strands nothing, so *that* question is not asked — the
+  row's own subject verdict is, whichever of the two keys the caller named (see
+  *What the subject column means*).
+- `executeStep` refuses the rows a migration or a direct database edit left
+  mismatched, before selecting a sender or writing a `SentMessage` — the harm is
+  the one a prospect reads.
+
+And because no template can be written for `CALL` or `TASK`, a step on those
+channels carries no copy at all: the door says so rather than storing a reference
+nothing would ever render.
+
+## What the subject column means
+
+`prisma/schema.prisma` comments `subject String?` as `// For email`, and no code
+has ever read that as a rule. The column has exactly one reader: the engine
+renders a subject *only* for an `EMAIL` step, `channels/email.ts` sends
+`msg.subject || "New message"`, `sendLinkedIn` posts a literal provider subject of
+its own, and `sendWhatsApp` does not take the argument. So both ways of ignoring
+that one reader are bugs a person notices — an `EMAIL` template with an empty
+subject mails a mail titled **"New message"** (the harm above, now reachable
+through a path that breaks no channel rule: `subject` is optional at both doors),
+and a subject on a `LINKEDIN` or `WHATSAPP` template is written, stored, returned
+by every read of the row, and delivered to nobody.
+
+`subjectProblem({ name, channel, subject })` is the verdict, and whether the
+column is mandatory or meaningless is decided by *another field* — which is what a
+per-field table cannot express, so it lives in one module:
+
+- `POST /api/templates` judges the row it was handed: `channel: "EMAIL"` with the
+  subject left out, blank or whitespace is a 400 on `subject`, and so is a subject
+  on a chat template.
+- `PATCH /api/templates/{id}` judges the row the update *would* leave, overlaying
+  the stored `channel` and `subject` — the rule #22 set for `variables`. Editing
+  only one half cannot quietly orphan the other; moving an email template's
+  channel onto a carrier with no subject column is refused — after the rows it
+  would strand are named, because clearing a subject does not unstrand them. A
+  patch that names neither key (a typo in `name`, new `body` text) is not asked to
+  write a subject line it never touched.
+- `executeStep` refuses an `EMAIL` step whose template carries no subject, before
+  rendering or storing anything — for the templates written before the rule. It is
+  deliberately narrower than the doors (`sendSubjectProblem`): a chat template that
+  carries a subject holds the author's dead copy, and stopping a message that would
+  arrive complete, to lecture about a column no carrier reads, is the wrong trade.
+
+The step doors are not among the callers, because they can write neither half of
+this pair: `POST /api/sequences` points at a template rather than composing one,
+and a subjectless email template is already refused at its own door. A track
+pointing at one that predates the rule is caught by the send guard above, and
+`POST /api/enrollments` reports it in `warning` the way it reports every
+first-step refusal.
+
 ## Contact lifecycle stops outreach
 
 `Contact.status` is `ACTIVE | BOUNCED | UNSUBSCRIBED | DO_NOT_CONTACT`, set
@@ -309,6 +455,40 @@ same rows the provider webhook writes when the real bounce or unsubscribe
 arrives — and `DO_NOT_CONTACT` → `PAUSED`, because completing fires the CRM's
 `sequence.completed` signal and a refusal must not announce itself as a
 finished send. ACTIVE contacts run as before.
+
+The other direction is true too: the provider signals *write* that column, so
+the sentence above is a fact rather than an analogy. A webhook `bounce`,
+`spamreport` or `unsubscribe` stamps the contact through
+`statusAfterProviderSignal` — bounce → `BOUNCED`, complaint or unsubscribe →
+`UNSUBSCRIBED` — and marks only an `ACTIVE` contact, so an operator's
+`DO_NOT_CONTACT` is never erased by a provider event and a second signal on an
+already-marked address changes nothing. Before this, a webhook bounce flipped
+the enrollment but left the contact `ACTIVE`, and the guard above happily
+opened the door to a brand-new enrollment for the same dead address;
+`unsubscribe` flipped nothing at all. The stamp reverts with the
+enrollment flip if the queue is unavailable, so a redelivered event replays
+the whole side effect rather than half of it.
+
+WhatsApp gets the same treatment from Twilio's *delivery-status* callbacks,
+which share the inbound-message route and its `MessageSid`: `undelivered` is
+always this channel's bounce, `failed` counts only when the error code names
+the recipient (an invalid number, no WhatsApp account, a blocked message —
+`providerSignalFromDeliveryStatus` keeps the codes that name our sender or the
+carrier's bad day off the contact, and an unseen code defaults to marking
+nobody). Those callbacks used to be matched as messages: their `From` is our
+own sending number, so the contact lookup missed and every delivery failure
+became a silent `200`. A failure now writes the same three rows the email
+bounce writes — `BOUNCED` message and enrollment, stamped contact — under the
+same idempotency and revert rules. The same callbacks also carry the funnel
+half: `delivered` writes a `DELIVERED` Activity and `read` (or `reading`) an
+`OPENED`, through the same dispatch, the same `#60` key and the same reverts —
+just without the status flips, because the message got through. Until then a
+WhatsApp step could only ever be *sent*: `hasOpen` and the attribution counters
+key on the Activity row, not the channel, so a follow-up guarded `no_open`
+would nag someone reading their phone two feet away, and no dashboard could
+show a WhatsApp open. `queued` and `sent` still write nothing — they
+corroborate the `SENT` we record ourselves, and the lifecycle table owns
+failures.
 
 ## Webhooks (outbound)
 
@@ -538,8 +718,10 @@ has not yet moved — and registration happens last and bounded by the vendored
 `awaitWithRegistrationTimeout` (§8.55), because against a Redis that answers nothing
 `upsertJobScheduler` does not reject, it never settles, and an unbounded await there hangs the
 boot rather than merely losing the schedule. Why a scan instead of one delayed job per step:
-`PATCH /api/enrollments/:id` has exactly one writable field, `nextActionAt`, and a delayed job
-sits in Redis where that edit cannot reach it — a scan reads the column the engine writes, so
+`nextActionAt` is a column the *engine* moves — the step advance re-dates the wait and a
+no-sender pass records one — while `PATCH /api/enrollments/:id` takes only `status` and
+`metadata`, and a job already parked in Redis is timed against the date it was minted
+with, not the one the row now holds. A scan reads the column the engine writes, so
 the pause/reschedule control means something again, rows written before this change are covered,
 and a retry cannot mint a fresh due date from a second clock. Guards in
 `tests/unit/sequence-sweep.test.ts` (27). After-probe on a **copy** of `dev.db` and Redis db 13:
@@ -553,3 +735,40 @@ spent a due enrollment on its own after 3s. On that same copy the shipped data r
 enrollments sitting on an ended wait, 0 steps with conditions and 0 `SendingAccount` rows — which
 is why this went unnoticed: nothing configured in the dev workspace could show it, while every
 real campaign's second email was silently never sent.
+
+## A condition decides both ways
+
+`conditions` on a sequence step is the product's "branch conditions" sentence,
+and round #23 made the satisfied half true. This round is the other half,
+found by *using* the first one: `{if: "no_open", then: "end"}` finally ended
+the unread — and parked the opened. `stepOutcome` answered an unsatisfied
+condition with `wait`, and for a wait-condition that tick never comes again:
+the sweep re-reads the same overdue row every minute and declines it forever,
+silently, ACTIVE, with no next action and nothing to tell anyone. "Nudge the
+readers, end the unread" — the plainest sentence in sales engagement — was
+inexpressible.
+
+`conditions.elseThen` is that sentence. The satisfied branch runs `then` as
+before; the unsatisfied one runs `elseThen` where defined, and two disciplines
+keep it honest. Only the sweep's `TIME_ELAPSED` tick consults the else: an
+event trigger firing it would spend the step ahead of its calendar — a read
+receipt at 8pm must not send tomorrow's nudge tonight, which is the same
+`delayDays` promise the sweep was built to keep. And `elseThen` is accepted
+only on the wait conditions (`no_reply`, `no_open`, `no_click`): the else of
+`replied` is "this event did not just happen", true of every other trigger, so
+an event-condition else would fire the step on the first unrelated callback.
+The else menu is `next`/`skip`/`end` with no `branch` — a second
+`branchToStep` vocabulary is a bigger surface than the direction it would
+serve. `conditionProblem` (the write-time twin, 400 at create) refuses
+off-menu actions and event-condition elses by naming the sets; `stepOutcome`
+throws again at run time, because rows outlive the request that validated
+them. No `elseThen` is exactly the old behavior, so every stored sequence keeps
+what its author configured — the guard is in the known answers: `{if:
+"no_open", then: "end"}` with `opened` still waits.
+
+Live, the two halves become a control pair: two contacts, one
+`{if: "no_open", then: "end", elseThen: "next"}` step, one rewound clock, and
+the only difference is a signed WhatsApp `read` from the previous round's
+callback — the reader gets the nudge, the unread's run ends, and both
+decisions were made by the same line of the same pure function on the same
+tick.

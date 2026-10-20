@@ -6,6 +6,8 @@ import { verifyInboundWebhook } from "@/lib/inbound-webhooks";
 import { validateBody, type Validated } from "@/lib/validate";
 import { enqueueDailyRollup } from "@/lib/analytics";
 import { recordInboundActivity, activityIdempotencyKey, undoInboundSideEffect } from "@/lib/activities";
+import { providerSignalFromDeliveryStatus, engagementActivityFromDeliveryStatus, statusAfterProviderSignal } from "@/lib/sequence-engine";
+import { recomputeAccountReputation } from "@/lib/reputation";
 import { INBOUND_MESSAGE_EVENT } from "@/lib/fields";
 import { triggerWebhooks } from "@/lib/webhooks";
 
@@ -30,6 +32,101 @@ export async function POST(request: Request) {
       : JSON.parse(rawBody)) as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
+  }
+
+  // A delivery-status callback shares the MessageSid field — the comment below
+  // has known that since it was written — but means the opposite thing: nobody
+  // replied, the number could not be reached. Until here the route answered it
+  // by accident: the callback passed the inbound shape check (`Body` is absent
+  // and optional), its `From` is OUR sending number so the contact lookup
+  // missed, and every real delivery failure was absorbed as `{ ok: true }`.
+  // The Status field is the dispatch; modern Twilio calls it MessageStatus.
+  //
+  // Matched on the provider id stored at send time — never on From, which on
+  // this shape is OUR number. Two pure tables decide what a status means:
+  // `providerSignalFromDeliveryStatus` for the lifecycle (which failures are
+  // this channel's bounce) and `engagementActivityFromDeliveryStatus` for the
+  // funnel (delivered/read are the provider saying the person got the message
+  // and looked at it — the same Activity rows `no_open` steps and attribution
+  // already read for email). Everything else — queued, sent, a failed whose
+  // code names our sender or the carrier's bad day — is acknowledged and
+  // writes nothing. A bounce then follows the email webhook's shape exactly:
+  // Activity under the #60 idempotency key, enrollment stopped, message
+  // marked, contact stamped through `statusAfterProviderSignal` (an operator's
+  // DO_NOT_CONTACT survives), one reverts list so a queue outage replays the
+  // whole side effect on redelivery rather than half of it.
+  const deliveryStatus = body.MessageStatus ?? body.Status;
+  if (typeof deliveryStatus === "string") {
+    const signal = providerSignalFromDeliveryStatus(deliveryStatus, body.ErrorCode);
+    const engagement = engagementActivityFromDeliveryStatus(deliveryStatus);
+    if (signal === null && engagement === null) return NextResponse.json({ ok: true });
+    const messageId = body.MessageSid;
+    if (typeof messageId !== "string" || messageId === "") return NextResponse.json({ ok: true });
+
+    const sentMessage = await prisma.sentMessage.findFirst({ where: { providerMessageId: messageId } });
+    if (!sentMessage?.enrollmentId) return NextResponse.json({ ok: true });
+    const enrollmentId = sentMessage.enrollmentId;
+    const activityType = engagement === null ? "BOUNCED" : engagement;
+
+    const activity = await recordInboundActivity(
+      activityIdempotencyKey({ channel: "WHATSAPP", messageId, activityType }),
+      {
+        enrollmentId,
+        contactId: sentMessage.contactId,
+        type: activityType,
+        channel: "WHATSAPP",
+        messageId,
+        metadata: { provider: "twilio", status: deliveryStatus, errorCode: body.ErrorCode ?? null, errorMessage: body.ErrorMessage ?? null },
+      },
+    );
+    if (!activity) return NextResponse.json({ ok: true });
+    await enqueueDailyRollup(enrollmentId, activity.createdAt);
+
+    const reverts: Array<() => Promise<unknown>> = [];
+    if (signal !== null) {
+      const priorEnrollment = await prisma.enrollment.findUnique({ where: { id: enrollmentId }, select: { status: true } });
+      const priorSentMessageStatus = sentMessage.status;
+      await prisma.sentMessage.update({ where: { id: sentMessage.id }, data: { status: "BOUNCED" } });
+      await prisma.enrollment.update({ where: { id: enrollmentId }, data: { status: "BOUNCED" } });
+      if (priorEnrollment) {
+        const back = priorEnrollment.status;
+        reverts.push(() => prisma.enrollment.update({ where: { id: enrollmentId }, data: { status: back } }));
+      }
+      reverts.push(() => prisma.sentMessage.update({ where: { id: sentMessage.id }, data: { status: priorSentMessageStatus } }));
+
+      const priorContact = await prisma.contact.findUnique({ where: { id: sentMessage.contactId }, select: { status: true } });
+      const marked = priorContact ? statusAfterProviderSignal(priorContact.status, signal) : null;
+      if (priorContact && marked) {
+        const back = priorContact.status;
+        await prisma.contact.update({ where: { id: sentMessage.contactId }, data: { status: marked } });
+        reverts.push(() => prisma.contact.update({ where: { id: sentMessage.contactId }, data: { status: back } }));
+      }
+    }
+
+    try {
+      await enqueue(queues.sequence, "process-step", { enrollmentId, activityType });
+    } catch (error) {
+      if (error instanceof QueueUnavailableError) {
+        // Engagement rows undo to just the row delete — the empty reverts list
+        // is the point: a read receipt flips nothing, so a redelivery replays
+        // the count and re-drives the condition without status rewrites.
+        await undoInboundSideEffect(activity.id, reverts);
+        return NextResponse.json({ error: error.message }, { status: error.status });
+      }
+      throw error;
+    }
+    if (signal !== null) {
+      // The relabel just moved a row into the account's rolling bounce window;
+      // the score follows the ledger, now. Non-fatal: an undo above reverted
+      // the row with its own score left correct, and the throttled sweep pass
+      // corrects anything missed here.
+      try {
+        await recomputeAccountReputation(sentMessage.sendingAccountId);
+      } catch (error) {
+        console.warn(`reputation recompute missed for account ${sentMessage.sendingAccountId}:`, error instanceof Error ? error.message : error);
+      }
+    }
+    return NextResponse.json({ ok: true });
   }
 
   // Twilio names a MessageSid on its delivery-status callbacks as well as on an

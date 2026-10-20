@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { validateBody, validateItems } from "@/lib/validate";
 import { ABTEST_CREATE, ABTEST_VARIANT } from "@/lib/fields";
 import { validateAbTestSemantics, type AbTestVariantInput } from "@/lib/abtest";
+import { armChannelProblem } from "@/lib/channel-fit";
 
 export const dynamic = "force-dynamic";
 
@@ -52,15 +53,27 @@ async function POST_impl(request: Request) {
   // their contacts through it; a test wired to a missing template would ship
   // an arm whose messages read `undefined`.
   for (const variant of variants) {
-    const sequence = await prisma.sequence.findFirst({ where: { id: variant.sequenceId, workspaceId }, select: { id: true } });
+    const sequence = await prisma.sequence.findFirst({
+      where: { id: variant.sequenceId, workspaceId },
+      select: { id: true, steps: { select: { stepNumber: true, channel: true } } },
+    });
     if (!sequence) {
       return NextResponse.json({ error: `variant "${variant.name}" names a sequence that does not exist in this workspace` }, { status: 400 });
     }
     if (variant.templateId) {
-      const template = await prisma.template.findFirst({ where: { id: variant.templateId, workspaceId }, select: { id: true } });
+      const template = await prisma.template.findFirst({
+        where: { id: variant.templateId, workspaceId },
+        select: { id: true, name: true, channel: true },
+      });
       if (!template) {
         return NextResponse.json({ error: `variant "${variant.name}" names a template that does not exist in this workspace` }, { status: 400 });
       }
+      // An arm's copy rides EVERY step of the track it overrides (#24), so it is
+      // judged against all of them: a variant template written for LINKEDIN would
+      // drop its subjectless body onto every EMAIL step of the arm — the one
+      // prospect-visible outcome of an arm whose steps the create door never read.
+      const problem = armChannelProblem(`arm "${variant.name}"`, template, sequence.steps);
+      if (problem) return NextResponse.json({ error: problem }, { status: 400 });
     }
   }
 

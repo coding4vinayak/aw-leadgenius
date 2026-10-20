@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { withAuth, assertOwns } from "@/lib/apikeys";
 import { prisma } from "@/lib/db";
 import { queues, enqueue, QueueUnavailableError } from "@/lib/queue";
-import { validateBody } from "@/lib/validate";
+import { validateBody, fieldProblem } from "@/lib/validate";
+import { normalizeMergeValues, unfilledMergeTokens } from "@/lib/template-vars";
+import { mergePromisesForSteps } from "@/lib/merge-promise";
 import { ENROLLMENT_PATCH } from "@/lib/fields";
 
 export const dynamic = "force-dynamic";
@@ -24,20 +26,42 @@ async function PATCH_impl(request: Request, { params }: { params: Promise<{ id: 
 
   const current = await prisma.enrollment.findUnique({
     where: { id },
-    include: { campaign: { select: { workspaceId: true } } },
+    include: { campaign: { select: { workspaceId: true } }, sequence: { include: { steps: true } }, abVariant: { select: { templateId: true } } },
   });
   if (!current) return NextResponse.json({ error: "Not found" }, { status: 404 });
   await assertOwns(request, current.campaign.workspaceId);
 
-  // `status` is the only thing this route takes, and the `status && {...}`
-  // spread had two silent shapes: a request without one wrote an empty update
-  // and returned the row unchanged, and `"active"` stored a lowercase value
-  // that every comparison in the engine (`=== "ACTIVE"`) then misses.
+  // `status` used to be the only thing this route took, and it used to be
+  // required: an empty request wrote an empty update and returned the row
+  // unchanged, and `"active"` stored a lowercase value that every comparison in
+  // the engine (`=== "ACTIVE"`) then misses. `metadata` is the other door — the
+  // first wrote it at enroll, this one edits it after a meeting moves — and it
+  // replaces the object rather than merging into it, so the promises the
+  // sequence still makes are checked against the values being stored, and
+  // clearing a promised value by leaving it out is refused the same way enroll
+  // refuses a missing one. Fixing a moved meeting is allowed; un-filling it is
+  // not.
+  //
+  // And the promise is the resolved one. This row is already placed in an A/B
+  // arm, so the copy its next step sends is the variant's template wherever one
+  // exists — asking the bare `sequence.steps` here would judge the values against
+  // the control's wording while the caller is filling the arm's.
   const input = validateBody(body, ENROLLMENT_PATCH, { requireWrite: true });
   if (!input.ok) return input.error;
   const { status } = input.data;
 
-  const enrollment = await prisma.enrollment.update({ where: { id }, data: { status } });
+  if (input.data.metadata !== undefined) {
+    const normalized = normalizeMergeValues(input.data.metadata);
+    if (!normalized.ok) return fieldProblem("metadata", normalized.error);
+    const unfilled = unfilledMergeTokens(
+      await mergePromisesForSteps(current.sequence.steps, current.abVariant?.templateId),
+      normalized.values,
+    );
+    if (unfilled.length) return fieldProblem("metadata", unfilled.join("; "));
+    input.data.metadata = normalized.values;
+  }
+
+  const enrollment = await prisma.enrollment.update({ where: { id }, data: input.data });
 
   if (status === "ACTIVE") {
     try {
