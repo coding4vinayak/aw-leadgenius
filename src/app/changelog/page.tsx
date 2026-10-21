@@ -16,6 +16,15 @@ export default function Page() {
         <div className="mt-8 space-y-8 border-l-2 border-blue-600 pl-6">
           <div>
             <p className="text-sm text-gray-600">October 2026</p>
+            <h2 className="text-lg font-bold">v1.2.0 — The channel, the subject and the arm</h2>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-600">
+              <li><strong>Attribution</strong> answers &quot;which channel earned the reply&quot;, from the app's own sent activity rather than from a guess.</li>
+              <li><strong>A/B tests</strong> assign each contact to an arm by a hash of their id, so the same person always lands in the same arm.</li>
+              <li>The subject, the carrier and the traffic split are checked at the door, so a sequence cannot be built that sends email copy to a chat channel — and a contact marked dead is refused at enrollment and stopped by the sweep itself.</li>
+            </ul>
+          </div>
+          <div>
+            <p className="text-sm text-gray-600">October 2026</p>
             <h2 className="text-lg font-bold">v1.1.0 — Take the outreach trail with you</h2>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-600">
               <li>Owners and admins can download a workspace JSON with campaigns, sequences, templates, contacts, lists, sending accounts, webhook destinations and team.</li>
