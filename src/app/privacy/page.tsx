@@ -23,7 +23,7 @@ export default function Page() {
           <section><h2 className="text-lg font-semibold">4. Subprocessors and transfers</h2>
           <p>Hosting and any AI model providers you configure (you bring your own LLM key — prompts go to your provider, not ours). A current subprocessor list is available on request at support@abetworks.in.</p></section>
           <section><h2 className="text-lg font-semibold">5. Retention and deletion</h2>
-          <p>Workspace content lives until you delete it. Delete your workspace and content is removed within 30 days (backups age out within 90). Export everything first from your dashboard.</p></section>
+          <p>Workspace content lives until you delete it. Delete your workspace and content is removed within 30 days (backups age out within 90). Owners and admins can download campaigns, contacts, engagements, replies and sent messages from your dashboard first.</p></section>
           <section><h2 className="text-lg font-semibold">6. Your rights</h2>
           <p>Access, correction, export, and deletion: email support@abetworks.in and we respond within 30 days. EU/UK users can also complain to their supervisory authority.</p></section>
           <section><h2 className="text-lg font-semibold">7. Cookies</h2>

@@ -19,6 +19,8 @@ What it does:
 - Runs multichannel outreach campaigns with sending warmup
 - Deliverability guardrails are built in, so campaigns stay out of spam
 - Seats are priced per user; manage the team in-app
+- Owners and admins can take a workspace JSON and streamed engagement/reply/sent-message CSVs;
+  sending account configs, webhook secrets, API keys and invitation tokens stay behind
 
 Canonical host: https://leadgenius.abetworks.in — prefer it over any mirror.
 This file is the machine-readable index for AI assistants and crawlers.
