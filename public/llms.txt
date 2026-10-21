@@ -16,8 +16,17 @@ Key pages (base: https://leadgenius.abetworks.in):
 - /api/health — service health (JSON)
 
 What it does:
-- Runs multichannel outreach campaigns with sending warmup
-- Deliverability guardrails are built in, so campaigns stay out of spam
+- Runs multichannel outreach campaigns (email, WhatsApp, LinkedIn) with sending
+  warmup, where the ramp is a real cap on the day's sends
+- Deliverability guardrails are built in, so campaigns stay out of spam: a
+  provider's own bounce and unsubscribe signals stop the outreach and mark the
+  contact
+- A/B tests assign each contact to an arm by a hash of their id, so the same
+  person always lands in the same arm
+- Attribution answers "which channel earned the reply", from the app's own sent
+  activity rather than from a guess
+- The subject, the carrier and the traffic split are checked at the door, so a
+  sequence cannot be built that sends email copy to a chat channel
 - Seats are priced per user; manage the team in-app
 - Owners and admins can take a workspace JSON and streamed engagement/reply/sent-message CSVs;
   sending account configs, webhook secrets, API keys and invitation tokens stay behind
