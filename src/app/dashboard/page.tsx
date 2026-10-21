@@ -9,6 +9,7 @@ import { ApiKeyOnboarding } from "@/components/api-key-onboarding";
 import { AttributionPanel } from "@/components/attribution-panel";
 import { AiPanel, type AiField } from "@/components/ai-panel";
 import { ManageBillingButton } from "@/components/manage-billing";
+import { canManageRoles } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
 
@@ -220,6 +221,50 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             sub={sentCount > 0 ? `${((repliedCount / sentCount) * 100).toFixed(1)}% reply rate` : "no sends yet"}
           />
         </div>
+
+        {session && session.workspaceId === workspace.id && canManageRoles(session.role) && (
+          <div className="mb-8 rounded-2xl bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg font-bold text-gray-900">Export</h2>
+              <p className="text-xs text-gray-500">Owners and admins</p>
+            </div>
+            <p className="mt-1 max-w-3xl text-sm text-gray-600">
+              The workspace JSON carries campaigns, sequences, templates, contacts, lists,
+              sending accounts, webhook destinations and team. Engagements, replies and sent
+              messages stream separately as CSV so a high-volume workspace never has to fit
+              in memory.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <a
+                href="/api/export"
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700"
+              >
+                Download workspace (JSON)
+              </a>
+              <a
+                href="/api/export/activities"
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+              >
+                Download engagement audit (CSV)
+              </a>
+              <a
+                href="/api/export/replies"
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+              >
+                Download replies (CSV)
+              </a>
+              <a
+                href="/api/export/sent-messages"
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+              >
+                Download sent messages (CSV)
+              </a>
+            </div>
+            <p className="mt-3 text-xs text-gray-500">
+              Sending account configs, webhook signing secrets, API keys and invitation tokens are never included.
+            </p>
+          </div>
+        )}
 
         {session && (
           <div className="mb-8">

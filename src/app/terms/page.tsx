@@ -23,7 +23,7 @@ export default function Page() {
           <section><h2 className="text-lg font-semibold">4. Acceptable use</h2>
           <p>No spam, no scraping anyone else&apos;s data through our infrastructure, no unlawful content, no attempts to break rate limits, other tenants&apos; workspaces, or the service itself. We may suspend accounts that threaten deliverability, security, or other customers.</p></section>
           <section><h2 className="text-lg font-semibold">5. Your data</h2>
-          <p>You own your workspace data — messages, contacts, documents, metrics, workflows. Export anytime. We process it only to run the service, never sell it, and never train shared models on it. Backups exist for disaster recovery, not for resale.</p></section>
+          <p>You own your workspace data — campaigns, sequences, contacts, activities, replies, sent messages, templates, A/B tests, sending accounts, team. Owners and admins can export it anytime from the dashboard. We process it only to run the service, never sell it, and never train shared models on it. Backups exist for disaster recovery, not for resale.</p></section>
           <section><h2 className="text-lg font-semibold">6. Uptime and support</h2>
           <p>We target high availability and publish liveness at /api/health. Support tiers and response times are on the support page. Scheduled maintenance is announced in the changelog.</p></section>
           <section><h2 className="text-lg font-semibold">7. Liability</h2>

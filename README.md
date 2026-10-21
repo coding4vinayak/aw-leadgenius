@@ -576,6 +576,23 @@ ingest that emitted the event. `tests/unit/webhook-events.test.ts` pins the
 wiring — an event declared without an emitter, or an emitter that loses its
 call site, fails the suite.
 
+## Export
+
+The terms say a workspace owner can export anytime, and the privacy page tells a
+departing customer to take a copy first. Four session-authenticated doors make
+that true:
+
+| Door | What it returns |
+| --- | --- |
+| `GET /api/export` | Workspace JSON: team, invitations, campaigns with sequences and steps, templates, A/B tests, contacts and lists, sending accounts, webhook destinations. It names the enrollment, activity, reply and sent-message counts and points at the streams. |
+| `GET /api/export/activities` | Engagement audit as streamed CSV: one row per activity (SENT, DELIVERED, OPENED, CLICKED, REPLIED, BOUNCED, FAILED, UNSUBSCRIBED), paged by id in batches. |
+| `GET /api/export/replies` | Reply audit as streamed CSV: one row per inbound reply with sentiment, intent and processing status, paged by id in batches. |
+| `GET /api/export/sent-messages` | Sent message audit as streamed CSV: one row per outbound message with channel, subject, body, status and error, paged by id in batches. |
+
+All four are owner/admin only: a member gets `403`, anonymous `401`. They leave
+credentials behind — password digests, session tokens, API keys and their hashes,
+invitation token hashes, webhook signing secrets, sending account encrypted configs and Stripe ids. A sending account row keeps its name and provider but drops its encrypted config; a webhook row keeps its destination/events and drops its signing secret. Downloads are `no-store` and `nosniff`; the filename is sanitised from the workspace slug. CSV text starting `=`, `+`, `-`, `@`, tab or CR is prefixed with an apostrophe, so a contact field or message body cannot become a spreadsheet formula.
+
 ## AI (optional)
 
 `POST /api/ai/draft-reply` takes `{ workspaceId, enrollmentId, reply, productContext?, knownFacts?, model? }`.
