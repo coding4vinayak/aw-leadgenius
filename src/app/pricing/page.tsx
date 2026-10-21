@@ -97,7 +97,7 @@ export default async function Page() {
           <div className="rounded-2xl border p-6 border-gray-200 bg-white shadow-sm">
             <p className="text-sm font-semibold uppercase tracking-wide text-gray-600">Enterprise</p>
             <p className="mt-2 text-4xl font-bold">Custom</p>
-            <p className="mt-1 text-sm text-gray-600">SSO, audit exports, SLA, onboarding</p>
+            <p className="mt-1 text-sm text-gray-600">Audit exports available; SSO, SLA and onboarding by custom arrangement</p>
             <a href="mailto:support@abetworks.in?subject=LeadGenius%20enterprise" className="mt-6 block rounded-lg border border-blue-600 px-4 py-2 text-center text-sm font-semibold text-blue-600 hover:bg-blue-50 transition">Talk to us</a>
           </div>
         </div>
