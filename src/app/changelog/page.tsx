@@ -16,6 +16,15 @@ export default function Page() {
         <div className="mt-8 space-y-8 border-l-2 border-blue-600 pl-6">
           <div>
             <p className="text-sm text-gray-600">October 2026</p>
+            <h2 className="text-lg font-bold">v1.3.0 — See the shape of a campaign before you write one</h2>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-600">
+              <li>A new workspace can load one worked example in a click: a draft campaign, a three-step sequence (email, email, a call), the two templates behind it with the names they fill, five example contacts and three enrollments.</li>
+              <li>The example is built by the app&rsquo;s own rules &mdash; the same field tables, template rules, channel rules and merge rules the API enforces &mdash; so it can never be something the product would refuse at its own door.</li>
+              <li>Nothing has been sent and nothing will be: outreach needs a sending account, and the campaign stays a draft until you connect one and activate it. One click removes the example and its rows; nothing of yours is touched.</li>
+            </ul>
+          </div>
+          <div>
+            <p className="text-sm text-gray-600">October 2026</p>
             <h2 className="text-lg font-bold">v1.2.0 — The channel, the subject and the arm</h2>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-gray-600">
               <li><strong>Attribution</strong> answers &quot;which channel earned the reply&quot;, from the app's own sent activity rather than from a guess.</li>

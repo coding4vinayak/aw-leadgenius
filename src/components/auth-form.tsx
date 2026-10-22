@@ -28,6 +28,17 @@ import {
 
 const INITIAL: AuthState = {};
 
+/** Accent class per product, keyed by the same prop the shell receives. */
+const accentBg: Record<string, string> = {
+  "text-emerald-600": "bg-emerald-600",
+  "text-orange-600": "bg-orange-600",
+  "text-purple-600": "bg-purple-600",
+  "text-cyan-600": "bg-cyan-600",
+  "text-violet-600": "bg-violet-600",
+  "text-teal-600": "bg-teal-600",
+};
+
+/** Spread-safe view of a stored JSON object (config blobs, guardrail maps). */
 const FIELD_CLASS =
   "w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-[13px] text-gray-900 placeholder:text-gray-400 focus:border-gray-500 focus:outline-none";
 
@@ -46,16 +57,6 @@ function SubmitButton({ label, accent }: { label: string; accent: string }) {
   );
 }
 
-/** Accent class per product, keyed by the same prop the shell receives. */
-const accentBg: Record<string, string> = {
-  "text-emerald-600": "bg-emerald-600",
-  "text-orange-600": "bg-orange-600",
-  "text-purple-600": "bg-purple-600",
-  "text-cyan-600": "bg-cyan-600",
-  "text-violet-600": "bg-violet-600",
-  "text-teal-600": "bg-teal-600",
-};
-
 function Field({
   label,
   name,
@@ -65,6 +66,7 @@ function Field({
   required,
   autoFocus,
   invalid,
+  errorId,
 }: {
   label: string;
   name: string;
@@ -74,13 +76,16 @@ function Field({
   required?: boolean;
   autoFocus?: boolean;
   invalid?: boolean;
+  errorId?: string;
 }) {
+  const fieldId = `field-${name}`;
   return (
-    <label className="block">
+    <label htmlFor={fieldId} className="block">
       <span className="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-gray-500">
         {label}
       </span>
       <input
+        id={fieldId}
         name={name}
         type={type}
         autoComplete={autoComplete}
@@ -88,8 +93,14 @@ function Field({
         required={required}
         autoFocus={autoFocus}
         aria-invalid={invalid || undefined}
+        aria-describedby={errorId}
         className={`${FIELD_CLASS} ${invalid ? "border-red-400" : ""}`}
       />
+      {invalid && errorId && (
+        <p id={errorId} className="mt-1 text-[11px] text-red-600" role="alert" aria-live="polite">
+          {errorId}
+        </p>
+      )}
     </label>
   );
 }
@@ -121,6 +132,12 @@ export function AuthForm({
   const state = (isForgot ? resetState : authState) as AuthState & ResetState;
   const formAction = isForgot ? resetAction : authAction;
 
+  // Generate unique error IDs for accessibility
+  const nameErrorId = state.field === "name" && state.error ? "name-error" : undefined;
+  const workspaceErrorId = state.field === "workspace" && state.error ? "workspace-error" : undefined;
+  const emailErrorId = state.field === "email" && state.error ? "email-error" : undefined;
+  const passwordErrorId = state.field === "password" && state.error ? "password-error" : undefined;
+
   if (isForgot && resetState.sent) {
     return (
       <div className="rounded-md border border-green-200 bg-green-50 px-3 py-3 text-[12px] leading-relaxed text-gray-800">
@@ -143,7 +160,7 @@ export function AuthForm({
   }
 
   return (
-    <form action={formAction} className="space-y-3.5">
+    <form action={formAction} className="space-y-3.5" noValidate>
       {state.error && (
         <p
           role="alert"
@@ -164,6 +181,7 @@ export function AuthForm({
             required
             autoFocus
             invalid={state.field === "name"}
+            errorId={nameErrorId}
           />
           <Field
             label="Team or company"
@@ -172,6 +190,7 @@ export function AuthForm({
             autoComplete="organization"
             placeholder="Northwind Logistics"
             invalid={state.field === "workspace"}
+            errorId={workspaceErrorId}
           />
         </>
       )}
@@ -185,6 +204,7 @@ export function AuthForm({
         required
         autoFocus={!isSignup}
         invalid={state.field === "email"}
+        errorId={emailErrorId}
       />
       {!isForgot && (
         <Field
@@ -195,6 +215,7 @@ export function AuthForm({
           placeholder={isSignup ? "At least 8 characters" : "••••••••"}
           required
           invalid={state.field === "password"}
+          errorId={passwordErrorId}
         />
       )}
 
@@ -212,34 +233,32 @@ export function AuthForm({
       )}
 
       {!isForgot && (
-      <div className="pt-1 text-center text-[12px] text-gray-500">
-        {!isSignup && (
-          // A div, not a p: this block is already a block container and a
-          // <p> cannot legally contain another <p>.
-          <p className="mb-2">
-            <Link href="/forgot-password" className="text-gray-600 underline underline-offset-2">
-              Forgot your password?
-            </Link>
+        <div className="pt-1 text-center text-[12px] text-gray-500">
+          {!isSignup && (
+            <p className="mb-2">
+              <Link href="/forgot-password" className="text-gray-600 underline underline-offset-2">
+                Forgot your password?
+              </Link>
+            </p>
+          )}
+          <p>
+            {isSignup ? (
+              <>
+                Already have an account?{" "}
+                <Link href="/login" className="text-gray-900 underline underline-offset-2">
+                  Sign in
+                </Link>
+              </>
+            ) : (
+              <>
+                No account yet?{" "}
+                <Link href="/signup" className="text-gray-900 underline underline-offset-2">
+                  Create one
+                </Link>
+              </>
+            )}
           </p>
-        )}
-        <p>
-        {isSignup ? (
-          <>
-            Already have an account?{" "}
-            <Link href="/login" className="text-gray-900 underline underline-offset-2">
-              Sign in
-            </Link>
-          </>
-        ) : (
-          <>
-            No account yet?{" "}
-            <Link href="/signup" className="text-gray-900 underline underline-offset-2">
-              Create one
-            </Link>
-          </>
-        )}
-        </p>
-      </div>
+        </div>
       )}
     </form>
   );
@@ -269,6 +288,9 @@ export function TokenRedeemForm({
   const [redeemState, redeemAction] = useActionState(redeemPasswordReset, {} as RedeemState);
   const state = (isVerify ? verifyState : redeemState) as VerifyState & RedeemState;
   const formAction = isVerify ? verifyAction : redeemAction;
+
+  // Generate unique error IDs for accessibility
+  const passwordErrorId = state.error ? "password-error" : undefined;
 
   if (state.verified) {
     return (
@@ -309,9 +331,13 @@ export function TokenRedeemForm({
           placeholder="At least 8 characters"
           required
           autoFocus
+          invalid={state.error !== undefined}
+          errorId={passwordErrorId}
         />
       )}
       <SubmitButton label={label} accent={accent} />
     </form>
   );
 }
+
+/** Accent class per product, keyed by the same prop the shell receives. */
