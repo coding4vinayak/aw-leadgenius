@@ -10,6 +10,8 @@ import { AttributionPanel } from "@/components/attribution-panel";
 import { AiPanel, type AiField } from "@/components/ai-panel";
 import { ManageBillingButton } from "@/components/manage-billing";
 import { canManageRoles } from "@/lib/roles";
+import { ExampleCampaignCard } from "@/components/example-campaign-card";
+import { isExampleCampaign } from "@/lib/example-campaign";
 
 export const dynamic = "force-dynamic";
 
@@ -186,6 +188,10 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     }),
   ]);
 
+  // The example is recognised by its name, so the panel and the button that
+  // removes it agree with what the removal path will actually find.
+  const exampleLoaded = campaigns.some((c) => isExampleCampaign(c.name));
+
   return (
     <DashboardShell
       product="LeadGenius"
@@ -272,10 +278,21 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </div>
         )}
 
+        {/* The first run. A signup that starts on an empty screen ends on a
+            cancelled subscription, and the empty screen's own advice ("create
+            one via POST /api/campaigns") is advice for a buyer who already
+            writes code. So a workspace with nothing gets one worked example —
+            and one click that takes it away again. */}
+        {(campaigns.length === 0 || exampleLoaded) && (
+          <div className="mb-6">
+            <ExampleCampaignCard loaded={exampleLoaded} />
+          </div>
+        )}
+
         <div className="bg-white rounded-2xl shadow-sm p-6">
           <h2 className="text-lg font-bold text-gray-900 mb-4">Campaigns</h2>
           {campaigns.length === 0 ? (
-            <p className="text-sm text-gray-500">No campaigns yet. Create one via <code>POST /api/campaigns</code>.</p>
+            <p className="text-sm text-gray-500">No campaigns yet. The example above is one click, or start from blank.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

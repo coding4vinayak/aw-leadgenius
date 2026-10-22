@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 const CHANGELOG = readFileSync(new URL("../../src/app/changelog/page.tsx", import.meta.url), "utf8");
 
 const SHIPPED = [
+  { feature: "the example campaign (the first run)", marks: ["one worked example", "example contacts"] },
   { feature: "attribution", marks: ["Attribution"] },
   { feature: "A/B tests", marks: ["A/B tests"] },
   { feature: "the workspace export", marks: ["workspace JSON"] },];
