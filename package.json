@@ -12,6 +12,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "test": "tsx --test tests/unit/*.test.ts",
+    "check:first-run": "tsx scripts/check-first-run.mts",
     "seed:key": "tsx prisma/seed-key.ts"
   },
   "dependencies": {
