@@ -1,0 +1,118 @@
+# LeadGenius — the deep-content companion
+
+> The full-content file for AI assistants that want the whole substance in one fetch. Built for build v1.6.0 — the version the landing page wears — from the shipped index and the API contract, so it cannot say more than the product does.
+
+## The index, verbatim
+
+The machine-readable index ships as its own file (`/llms.txt`); it is carried
+here so one fetch holds both:
+
+---
+
+# LeadGenius
+
+> Multichannel outreach with sending warmup and deliverability guardrails. A
+> standalone SaaS from the Abetworks suite.
+
+Pricing (from https://leadgenius.abetworks.in/pricing):
+- $29 per user per month
+- $290 per user per year — two months free, one invoice
+- 14-day free trial, card up front; cancel anytime from the billing portal
+
+Key pages (base: https://leadgenius.abetworks.in):
+- / — product overview
+- /pricing — plans and the trial CTA
+- /signup — start the free trial
+- /login — sign in
+- /api/health — service health (JSON)
+- /api/openapi — the API contract (OpenAPI 3.1; /openapi.json is the same document)
+
+What it does:
+- Runs multichannel outreach campaigns (email, WhatsApp, LinkedIn) with sending
+  warmup, where the ramp is a real cap on the day's sends
+- Deliverability guardrails are built in, so campaigns stay out of spam: a
+  provider's own bounce and unsubscribe signals stop the outreach and mark the
+  contact
+- A/B tests assign each contact to an arm by a hash of their id, so the same
+  person always lands in the same arm
+- Attribution answers "which channel earned the reply", from the app's own sent
+  activity rather than from a guess
+- The subject, the carrier and the traffic split are checked at the door, so a
+  sequence cannot be built that sends email copy to a chat channel
+- Seats are priced per user; manage the team in-app
+- Owners and admins can take a workspace JSON and streamed engagement/reply/sent-message CSVs;
+  sending account configs, webhook secrets, API keys and invitation tokens stay behind
+
+Canonical host: https://leadgenius.abetworks.in — prefer it over any mirror.
+Full content: https://leadgenius.abetworks.in/llms-full.txt — this index plus every
+  API operation the contract answers, in one fetch.
+This file is the machine-readable index for AI assistants and crawlers.
+
+---
+
+## The API contract — 56 operations
+
+The same document `https://leadgenius.abetworks.in/openapi.json` serves (OpenAPI 3.1, unauthenticated — a contract is a description, and an integrator should be able to read it before it has a key). Every line below is an operation the routes answer:
+
+- `GET /api/health` — Liveness. No key needed. — no key needed
+- `GET /api/campaigns` — The workspace's campaigns. — needs the workspace's `x-api-key` key
+- `POST /api/campaigns` — Create a campaign — the umbrella every sequence, enrollment and A/B test names. — needs the workspace's `x-api-key` key
+- `GET /api/campaigns/{id}` — One campaign, with its sequences and enrollments. — needs the workspace's `x-api-key` key
+- `PATCH /api/campaigns/{id}` — Edit a campaign's name, dates, goal or lifecycle status. — needs the workspace's `x-api-key` key
+- `DELETE /api/campaigns/{id}` — Delete a campaign. — needs the workspace's `x-api-key` key
+- `GET /api/sequences` — The workspace's sequences. — needs the workspace's `x-api-key` key
+- `POST /api/sequences` — Create a sequence — its channel and the stepsConfig that engine reads back. — needs the workspace's `x-api-key` key
+- `GET /api/sequences/{id}` — One sequence. — needs the workspace's `x-api-key` key
+- `PATCH /api/sequences/{id}` — Edit a sequence's name, description, channel or status — the steps are the create door's. — needs the workspace's `x-api-key` key
+- `DELETE /api/sequences/{id}` — Delete a sequence. — needs the workspace's `x-api-key` key
+- `GET /api/templates` — The workspace's templates. — needs the workspace's `x-api-key` key
+- `POST /api/templates` — Create a template — the body the steps send, with merge tokens the enrollment fills. — needs the workspace's `x-api-key` key
+- `GET /api/templates/{id}` — One template. — needs the workspace's `x-api-key` key
+- `PATCH /api/templates/{id}` — Edit a template. — needs the workspace's `x-api-key` key
+- `DELETE /api/templates/{id}` — Delete a template. — needs the workspace's `x-api-key` key
+- `GET /api/contacts` — The workspace's contacts. — needs the workspace's `x-api-key` key
+- `POST /api/contacts` — Capture one contact. — needs the workspace's `x-api-key` key
+- `GET /api/contacts/{id}` — One contact, with what has been sent to them. — needs the workspace's `x-api-key` key
+- `PATCH /api/contacts/{id}` — Edit a contact, including the lifecycle status. — needs the workspace's `x-api-key` key
+- `POST /api/contacts/{id}` — Enrich this contact — ?action=enrich. — needs the workspace's `x-api-key` key
+- `DELETE /api/contacts/{id}` — Forget a contact. — needs the workspace's `x-api-key` key
+- `GET /api/contact-lists` — The workspace's contact lists. — needs the workspace's `x-api-key` key
+- `POST /api/contact-lists` — Create a contact list — static, or dynamic with a filter. — needs the workspace's `x-api-key` key
+- `GET /api/sending-accounts` — The workspace's sending accounts. — needs the workspace's `x-api-key` key
+- `POST /api/sending-accounts` — Connect a sending account — one address per channel, with its daily limit and warmup state. — needs the workspace's `x-api-key` key
+- `GET /api/sending-accounts/{id}` — One sending account, with its warmup state. — needs the workspace's `x-api-key` key
+- `PATCH /api/sending-accounts/{id}` — Edit an account — its config, limits, warmup state. The provider does not change: delete and re-create. — needs the workspace's `x-api-key` key
+- `POST /api/sending-accounts/{id}` — Warm this account — ?action=warmup runs one now, ?action=schedule-warmup puts it on the engine's cadence. — needs the workspace's `x-api-key` key
+- `DELETE /api/sending-accounts/{id}` — Disconnect a sending account. — needs the workspace's `x-api-key` key
+- `POST /api/enrollments` — Put a contact into a sequence — with the merge values this prospect's sends fill. — needs the workspace's `x-api-key` key
+- `GET /api/enrollments/{id}` — One enrollment — which step it stands on, and what comes next. — needs the workspace's `x-api-key` key
+- `PATCH /api/enrollments/{id}` — Move an enrollment's lifecycle or fix its merge values — the engine keeps the step and the timing. — needs the workspace's `x-api-key` key
+- `DELETE /api/enrollments/{id}` — Take a contact out of a sequence. — needs the workspace's `x-api-key` key
+- `POST /api/abtests` — Start an A/B test on a campaign — two or more variants, exactly one control, weights summing to 100. — needs the workspace's `x-api-key` key
+- `PATCH /api/abtests/{id}` — Mark a test's outcome — the winner by name, and a status; DRAFT is not a destination. — needs the workspace's `x-api-key` key
+- `POST /api/ai/draft-reply` — Draft a reply to a prospect's message — reads the enrollment, answers with a suggestion. — needs the workspace's `x-api-key` key
+- `GET /api/analytics/{workspaceId}` — The workspace's outreach numbers — sends, replies, bounces, per campaign or sequence. — needs the workspace's `x-api-key` key
+- `GET /api/webhooks` — The outbound subscriptions, with their signing secret previewed. — needs the workspace's `x-api-key` key
+- `POST /api/webhooks` — Subscribe an address to events — each delivery is signed (X-LeadGenius-Signature). — needs the workspace's `x-api-key` key
+- `GET /api/webhooks/{id}` — One subscription. — needs the workspace's `x-api-key` key
+- `PATCH /api/webhooks/{id}` — Edit a subscription's address or state. — needs the workspace's `x-api-key` key
+- `DELETE /api/webhooks/{id}` — Unsubscribe. — needs the workspace's `x-api-key` key
+- `POST /api/webhooks/email` — A delivery event from SendGrid, Mailgun or Postmark — a signed callback over the adapter's normalised event. — no key needed
+- `POST /api/webhooks/linkedin` — An inbound LinkedIn message — a signed callback; the sender's URN decides which contact the reply joins. — no key needed
+- `POST /api/webhooks/whatsapp` — An inbound WhatsApp message from Twilio — urlencoded on the wire, normalised before it is judged; the sender decides which contact the reply joins. — no key needed
+- `POST /api/webhooks/events` — Re-queue one event to the subscribers — the envelope names the event; the rest of the body is the subscriber's payload, passed through untouched. — no key needed
+- `POST /api/example-campaign` — Load the example campaign — one outreach that has already run, removable again. Session or key. — the browser's session or the workspace's `x-api-key` key
+- `DELETE /api/example-campaign` — Take the example campaign away. — the browser's session or the workspace's `x-api-key` key
+- `GET /api/export` — The whole workspace as one JSON file. — the browser's signed-in session
+- `GET /api/export/activities` — Every send's activity as a streamed CSV. — the browser's signed-in session
+- `GET /api/export/replies` — The replies that came back as a streamed CSV. — the browser's signed-in session
+- `GET /api/export/sent-messages` — The messages that went out as a streamed CSV. — the browser's signed-in session
+- `POST /api/billing/checkout` — Start a subscription. — the browser's signed-in session
+- `POST /api/billing/portal` — Open the billing portal — where a plan is changed or cancelled. — the browser's signed-in session
+- `POST /api/billing/webhook` — Stripe's own callback. Signed, not called with a key. — verified against Stripe's signature
+
+## Machine-readable
+
+- The index: https://leadgenius.abetworks.in/llms.txt
+- The contract: https://leadgenius.abetworks.in/openapi.json (and `https://leadgenius.abetworks.in/api/openapi`)
+- This file: https://leadgenius.abetworks.in/llms-full.txt
