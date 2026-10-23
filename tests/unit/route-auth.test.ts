@@ -41,6 +41,10 @@ const MAX_HANDLERS = 78;
 const PUBLIC: Record<string, string[]> = {
   // Liveness probe: `SELECT 1` and nothing else.
   "src/app/api/health/route.ts": ["GET"],
+  // The contract is a description, not data: an integrator should be able to
+  // read it before it has a key, and the document holds no workspace's rows.
+  "src/app/api/openapi/route.ts": ["GET"],
+  "src/app/openapi.json/route.ts": ["GET"],
   // Stripe's own callback. POST is refused unless `stripe-signature` verifies
   // against STRIPE_WEBHOOK_SECRET (verifyWebhook), which is the authentication.
   "src/app/api/billing/webhook/route.ts": ["POST"],
