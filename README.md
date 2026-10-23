@@ -168,6 +168,13 @@ readable without a key, because a contract is a description, not data. It
 cannot drift from the product by hand: `npm run check:contract` runs in CI
 and fails naming the lie when the spec and the routes disagree.
 
+**The deep-content file**: `GET /llms-full.txt` carries the shipped index
+(`llms.txt`) verbatim and then every operation the contract answers, each with
+its own summary and the door it declares — built from those two sources, not
+from hand-written prose, so it cannot say more than the product does.
+`npm run check:llms-full` (in CI) fails naming the first line that moved
+against a stale index or contract; rebuild with `npm run build:llms-full`.
+
 All routes below need the key from [Authentication](#authentication) —
 the snippets omit the header for width.
 
