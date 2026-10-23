@@ -161,6 +161,13 @@ being guesswork.
 
 ## API
 
+The whole API is also described by one machine-readable document, in the
+OpenAPI 3.1 format every API tool probes first: `/api/openapi` (the versioned
+home) and `/openapi.json` (the same document, at the discovery path) — both
+readable without a key, because a contract is a description, not data. It
+cannot drift from the product by hand: `npm run check:contract` runs in CI
+and fails naming the lie when the spec and the routes disagree.
+
 All routes below need the key from [Authentication](#authentication) —
 the snippets omit the header for width.
 

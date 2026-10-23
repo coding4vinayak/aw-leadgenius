@@ -16,6 +16,15 @@ export default function Page() {
         <div className="mt-8 space-y-8 border-l-2 border-blue-600 pl-6">
           <div>
             <p className="text-sm text-muted">October 2026</p>
+            <h2 className="text-lg font-bold">v1.5.0 — The OpenAPI contract, checked against the routes</h2>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-muted">
+              <li>The whole API — campaigns, sequences, templates, contacts, sending accounts, enrollments, A/B tests, the AI draft, analytics, webhooks and the example campaign — is described by one OpenAPI 3.1 document at <code>/api/openapi</code> and <code>/openapi.json</code>, readable without a key.</li>
+              <li>The four provider callbacks are described as what they are: signed deliveries whose envelopes the adapter normalises before the door judges them.</li>
+              <li>It cannot drift by hand: <code>npm run check:contract</code> runs in CI, reads every claim back out of the routes, and fails naming the lie.</li>
+            </ul>
+          </div>
+          <div>
+            <p className="text-sm text-muted">October 2026</p>
             <h2 className="text-lg font-bold">v1.4.0 — Also in the Abetworks suite</h2>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-muted">
               <li>The pricing page now says what the suite is: every product is sold standalone, and one contract can set up a workspace across all of them.</li>

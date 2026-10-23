@@ -14,6 +14,7 @@ Key pages (base: https://leadgenius.abetworks.in):
 - /signup — start the free trial
 - /login — sign in
 - /api/health — service health (JSON)
+- /api/openapi — the API contract (OpenAPI 3.1; /openapi.json is the same document)
 
 What it does:
 - Runs multichannel outreach campaigns (email, WhatsApp, LinkedIn) with sending
