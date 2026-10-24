@@ -1,10 +1,12 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 type PriceKey = "USER_MONTHLY" | "USER_ANNUAL";
 
 export function BuyButton({ priceId, label }: { priceId: PriceKey; label: string }) {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -21,7 +23,7 @@ export function BuyButton({ priceId, label }: { priceId: PriceKey; label: string
         }),
       });
       if (res.status === 401) {
-        window.location.href = "/login";
+        router.push("/login");
         return;
       }
       const data = (await res.json()) as { url?: string; error?: string };
