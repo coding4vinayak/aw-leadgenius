@@ -81,6 +81,21 @@ describe("emission wiring", () => {
     assert.match(SRC, /"X-Webhook-Signature": `sha256=\$\{signature\}`/);
   });
 
+  it("signs the exact bytes it sends — one stringify, not two", () => {
+    // The two-digest receiver-visible failure mode: sign one serialization,
+    // send another. It agrees today and breaks at the first field whose order
+    // or escaping moves, and at the receiver it reads as a forged signature.
+    // nuCRM shipped this to itself on its retry path; this pins that we do not.
+    const bodyAt = SRC.indexOf("const body = JSON.stringify(payload);");
+    const signAt = SRC.indexOf("generateSignature(webhook.secret, body)");
+    const sendAt = SRC.indexOf("      body,\n    });");
+    assert.ok(bodyAt !== -1, "the payload is stringified once, into a named body");
+    assert.ok(signAt !== -1 && sendAt !== -1, "that body is signed, then sent");
+    assert.ok(bodyAt < signAt && signAt < sendAt, "stringify, then sign, then send");
+    assert.doesNotMatch(SRC, /generateSignature\(webhook\.secret, payload\)/, "the old shape: signing a second serialization");
+    assert.doesNotMatch(SRC, /body: JSON\.stringify\(payload\)/, "the old shape: sending a second serialization");
+  });
+
   it("refuses unknown names on both subscription writes", () => {
     const list = readFileSync(join(process.cwd(), "src/app/api/webhooks/route.ts"), "utf8");
     const patch = readFileSync(join(process.cwd(), "src/app/api/webhooks/[id]/route.ts"), "utf8");
