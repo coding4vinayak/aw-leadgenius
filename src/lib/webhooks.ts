@@ -36,7 +36,15 @@ export async function deliverWebhook(webhookId: string, payload: any): Promise<v
   const webhook = await prisma.webhook.findUnique({ where: { id: webhookId } });
   if (!webhook || !webhook.isActive) return;
 
-  const signature = generateSignature(webhook.secret, payload);
+  // Stringified once, into the exact bytes that are signed and then sent. A
+  // second stringify for the signature is a second serialization that agrees
+  // today — and drifts at the first field whose order or escaping changes,
+  // which lands at the receiver as a forged signature rather than a bug here.
+  // This is also the failure nuCRM shipped itself: its retry path re-sends
+  // stored headers over re-serialized bytes, so the digest no longer matches
+  // the body it posts.
+  const body = JSON.stringify(payload);
+  const signature = generateSignature(webhook.secret, body);
 
   try {
     await assertAllowedTarget(webhook.url, "url");
@@ -54,7 +62,7 @@ export async function deliverWebhook(webhookId: string, payload: any): Promise<v
         "X-LeadGenius-Event": payload.event,
         "User-Agent": "LeadGenius-Webhook/1.0",
       },
-      body: JSON.stringify(payload),
+      body,
     });
 
     if (!response.ok) {
@@ -65,8 +73,8 @@ export async function deliverWebhook(webhookId: string, payload: any): Promise<v
   }
 }
 
-function generateSignature(secret: string, payload: any): string {
-  return crypto.createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex");
+function generateSignature(secret: string, body: string): string {
+  return crypto.createHmac("sha256", secret).update(body).digest("hex");
 }
 
 export function verifySignature(secret: string, payload: string, signature: string): boolean {
