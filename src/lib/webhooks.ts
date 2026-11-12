@@ -52,6 +52,17 @@ export async function deliverWebhook(webhookId: string, payload: any): Promise<v
         // working, and one that only knows the generic name now does too.
         "X-Webhook-Signature": `sha256=${signature}`,
         "X-LeadGenius-Event": payload.event,
+        // Two headers a receiver on the nuCRM side reads. `x-webhook-timestamp`
+        // is freshness: its plugin receiver enforces a 5-minute window when the
+        // header is present and skips the check when it is absent, so a stale
+        // re-send — a retry that replays stored headers, a queue redelivery —
+        // is refused. The value sits outside the signed bytes, so a replayer
+        // could stamp a fresh one; what survives that is
+        // `x-webhook-delivery`: the payload `id`, inside the body the digest
+        // covers, so a receiver that remembers ids rejects the second arrival
+        // for good and cannot be talked into forgetting it.
+        "X-Webhook-Timestamp": String(Date.now()),
+        "X-Webhook-Delivery": payload.id,
         "User-Agent": "LeadGenius-Webhook/1.0",
       },
       body: JSON.stringify(payload),

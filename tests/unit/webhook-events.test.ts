@@ -79,6 +79,10 @@ describe("emission wiring", () => {
   it("delivers the family header and the generic one, so nuCRM can verify it", () => {
     assert.match(SRC, /"X-LeadGenius-Signature": signature/);
     assert.match(SRC, /"X-Webhook-Signature": `sha256=\$\{signature\}`/);
+  assert.match(SRC, /"X-Webhook-Timestamp": String\(Date\.now\(\)\)/,
+    "freshness: nuCRM's plugin receiver enforces the 5-minute window only when this header is present");
+  assert.match(SRC, /"X-Webhook-Delivery": payload\.id/,
+    "the id inside the signed body — the value a receiver can dedupe on and a replayer cannot refresh");
   });
 
   it("refuses unknown names on both subscription writes", () => {
